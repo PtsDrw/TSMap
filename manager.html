@@ -165,6 +165,21 @@
   </div>
 </div>
 
+<!-- Модалка редактирования союза -->
+<div id="modal-edit-alliance" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+    <h3 class="text-xl font-bold mb-4"><i class="fas fa-pen mr-2 text-yellow-500"></i>Редактировать союз</h3>
+    <label class="block text-sm mb-1">Клан-тег (3 символа)</label>
+    <input type="text" id="edit-al-tag" maxlength="3" class="w-full border rounded p-2 mb-3 dark:bg-gray-700 dark:border-gray-600 uppercase font-mono">
+    <label class="block text-sm mb-1">Название (необязательно)</label>
+    <input type="text" id="edit-al-name" class="w-full border rounded p-2 mb-3 dark:bg-gray-700 dark:border-gray-600">
+    <label class="block text-sm mb-1">Цвет</label>
+    <input type="color" id="edit-al-color" class="w-full h-10 mb-4">
+    <button id="btn-save-edit-alliance" class="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700 mb-2">Сохранить</button>
+    <button id="btn-close-edit-alliance" class="w-full text-sm text-gray-500 hover:underline">Отмена</button>
+  </div>
+</div>
+
 <div id="modal-save" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50 p-4">
   <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
     <h3 class="text-xl font-bold mb-4">Сохранить раскладку</h3>

@@ -1,4 +1,20 @@
-#game-map { display: block; width: 100%; height: 100%; }
+#game-map {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* ⭐ iOS/Safari: отключаем callout и выделение, разрешаем touch события */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+#game-map,
+#game-map * {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .territory {
   stroke: #000; stroke-width: 1px; fill: #fff;
   cursor: pointer; vector-effect: non-scaling-stroke;
@@ -83,6 +99,46 @@
   border-color: #2563eb;
 }
 
+/* ═══ Подсказка «Торговые посты» (левый нижний угол) ═══ */
+.map-trade-legend {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 6px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #334155;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  user-select: none;
+  font-weight: 500;
+  line-height: 1;
+}
+.map-trade-legend-swatch {
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border: 2.5px solid #f59e0b;
+  border-radius: 3px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.dark .map-trade-legend {
+  background: rgba(30, 41, 59, 0.92);
+  border-color: #475569;
+  color: #e5e7eb;
+}
+.dark .map-trade-legend-swatch {
+  background: #334155;
+  border-color: #fbbf24;
+}
+
 /* ═══ Fullscreen режим ═══ */
 #map-container.is-fullscreen,
 #map-container.fullscreen-fallback {
@@ -119,15 +175,12 @@ details > summary {
   position: relative;
   padding-right: 48px !important;
 }
-
-/* Убираем дефолтные маркеры во всех браузерах */
 details > summary::-webkit-details-marker { display: none; }
 details > summary::marker { content: ''; }
 details > summary { -webkit-details-marker: none; }
 
-/* Стрелка-иконка в подложке */
 details > summary::after {
-  content: "\f054"; /* fa-chevron-right */
+  content: "\f054";
   font-family: "Font Awesome 6 Free", "Font Awesome 5 Free", FontAwesome, sans-serif;
   font-weight: 900;
   position: absolute;
@@ -145,18 +198,14 @@ details > summary::after {
   transition: transform 0.2s ease, background 0.2s ease, color 0.2s ease;
   pointer-events: none;
 }
-
 details > summary:hover::after {
   background: rgba(148, 163, 184, 0.45);
 }
-
 details[open] > summary::after {
   transform: translateY(-50%) rotate(90deg);
   color: #1d4ed8;
   background: rgba(59, 130, 246, 0.2);
 }
-
-/* Тёмная тема — стрелка почти белая */
 .dark details > summary::after {
   color: #e2e8f0;
   background: rgba(148, 163, 184, 0.22);

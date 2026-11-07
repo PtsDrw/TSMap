@@ -36,6 +36,7 @@ let workingAssignments = {};
 let filters = {};
 let savedLayoutId = null;
 let mapReady = false;
+let editingAllianceId = null;
 
 function initFilters() {
   filters = {};
@@ -236,6 +237,11 @@ function initUIBindings() {
   });
   on('btn-close-alliance', 'click', () => document.getElementById('modal-alliance').classList.add('hidden'));
   on('btn-save-alliance', 'click', saveNewAlliance);
+  on('btn-save-edit-alliance', 'click', saveEditAlliance);
+on('btn-close-edit-alliance', 'click', () => {
+  document.getElementById('modal-edit-alliance').classList.add('hidden');
+  editingAllianceId = null;
+});
 
   on('alliance-select', 'change', e => {
     selectedAllianceId = e.target.value || null;
@@ -453,16 +459,37 @@ async function saveNewAlliance() {
   toast('Союз добавлен', 'success');
 }
 
-async function editAlliance(id) {
+function editAlliance(id) {
   const a = workingAlliances.find(x => x.id === id);
   if (!a) return;
-  const tag = prompt('Новый тег (3 символа):', a.tag);
-  if (!tag) return;
-  const t = tag.trim().toUpperCase();
-  if (!/^[A-ZА-ЯЁ0-9]{3}$/.test(t)) return toast('Тег — ровно 3 символа', 'error');
-  const name = prompt('Название:', a.name || '');
-  a.tag = t; a.name = name ?? a.name;
-  saveWorkingToSession(); renderAll();
+  editingAllianceId = id;
+  document.getElementById('edit-al-tag').value = a.tag || '';
+  document.getElementById('edit-al-name').value = a.name || '';
+  document.getElementById('edit-al-color').value = a.color || '#3b82f6';
+  document.getElementById('modal-edit-alliance').classList.remove('hidden');
+}
+
+function saveEditAlliance() {
+  const a = workingAlliances.find(x => x.id === editingAllianceId);
+  if (!a) return;
+
+  const tag = document.getElementById('edit-al-tag').value.trim().toUpperCase();
+  const name = document.getElementById('edit-al-name').value.trim();
+  const color = document.getElementById('edit-al-color').value;
+
+  if (!/^[A-ZА-ЯЁ0-9]{3}$/.test(tag)) return toast('Тег — ровно 3 символа', 'error');
+  if (workingAlliances.some(x => x.id !== editingAllianceId && x.tag === tag)) {
+    return toast('Тег уже используется', 'error');
+  }
+
+  a.tag = tag;
+  a.name = name;
+  a.color = color;
+  saveWorkingToSession();
+  document.getElementById('modal-edit-alliance').classList.add('hidden');
+  renderAll();
+  toast('Союз обновлён', 'success');
+  editingAllianceId = null;
 }
 
 async function deleteAlliance(id) {

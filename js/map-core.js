@@ -50,13 +50,20 @@ function safeParseViewBox(str) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   КНОПКИ УПРАВЛЕНИЯ КАРТОЙ
-   ⭐ Карандаш и перемещение теперь НЕЗАВИСИМЫ:
-       - карандаш: включает клики по территориям
-       - перемещение: включает панорамирование
-       - можно включить оба одновременно
+   ПОДСКАЗКА «ТОРГОВЫЕ ПОСТЫ»
    ═══════════════════════════════════════════════════════════════════ */
-function addMapControls(container, pz, interactive) {
+function addTradeLegend(container) {
+  if (!container || container.querySelector('.map-trade-legend')) return;
+  const el = document.createElement('div');
+  el.className = 'map-trade-legend';
+  el.innerHTML = '<span class="map-trade-legend-swatch"></span><span>Торговые посты</span>';
+  container.appendChild(el);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   КНОПКИ УПРАВЛЕНИЯ КАРТОЙ
+   ═══════════════════════════════════════════════════════════════════ */
+function addMapControls(container, pz, interactive, handleTerritoryClick) {
   const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
   let editMode = interactive && !isTouch;
@@ -94,52 +101,111 @@ function addMapControls(container, pz, interactive) {
     controls.innerHTML = html;
   };
 
-  // ⭐ Всегда touch-action: none — pinch работает всегда
   const applyInteraction = () => {
     container.style.touchAction = 'none';
     const svg = container.querySelector('svg');
-    if (svg) svg.style.touchAction = 'none';
-
-    if (panEnabled) pz.enablePan();
-    else pz.disablePan(); // pinch продолжает работать (isPinching обрабатывается до panEnabled)
+    if (svg) {
+      svg.style.touchAction = 'none';
+      svg.querySelectorAll('*').forEach(el => { el.style.touchAction = 'none'; });
+    }
+    if (panEnabled) {
+      pz.enablePan();
+    } else {
+      pz.disablePan();
+      // ⭐ Явно включаем zoom и touch zoom — disablePan может задеть внутренние флаги
+      pz.enableZoom();
+      if (typeof pz.enableTouchZoom === 'function') pz.enableTouchZoom();
+    }
   };
 
   render();
   applyInteraction();
 
-  /* ⭐ Ручной скролл страницы при pan ВЫКЛ (1 палец) */
+  /* ═══ Обработчики тач-событий ═══ */
+  let tapData = null;
   let scrollTouchY = null;
   let scrollMoved = false;
+  const TAP_THRESHOLD = 10;
   const SCROLL_THRESHOLD = 5;
+  const TAP_TIME_LIMIT = 600;
 
   const onTouchStart = (e) => {
-    if (panEnabled || e.touches.length !== 1) { scrollTouchY = null; return; }
-    scrollTouchY = e.touches[0].clientY;
-    scrollMoved = false;
+    if (e.touches.length !== 1) { tapData = null; return; }
+    const t = e.touches[0];
+    tapData = { x: t.clientX, y: t.clientY, time: Date.now(), moved: false };
+    if (!panEnabled) scrollTouchY = t.clientY;
   };
 
   const onTouchMove = (e) => {
-    if (panEnabled || scrollTouchY === null || e.touches.length !== 1) return;
-    const dy = scrollTouchY - e.touches[0].clientY;
-    if (Math.abs(dy) > SCROLL_THRESHOLD) {
-      scrollMoved = true;
-      window.scrollBy(0, dy);
-      scrollTouchY = e.touches[0].clientY;
+    // ⭐ 2+ пальца: блокируем браузерный pinch-to-zoom страницы,
+    //    отдаём событие библиотеке svg-pan-zoom
+    if (e.touches.length >= 2) {
+      if (e.cancelable) e.preventDefault();
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+
+    if (tapData && !tapData.moved) {
+      const dx = Math.abs(t.clientX - tapData.x);
+      const dy = Math.abs(t.clientY - tapData.y);
+      if (dx > TAP_THRESHOLD || dy > TAP_THRESHOLD) tapData.moved = true;
+    }
+
+    if (!panEnabled && scrollTouchY !== null) {
+      const dy = scrollTouchY - t.clientY;
+      if (Math.abs(dy) > SCROLL_THRESHOLD) {
+        scrollMoved = true;
+        window.scrollBy(0, dy);
+        scrollTouchY = t.clientY;
+      }
     }
   };
 
-  const onTouchEnd = () => {
-    scrollTouchY = null;
-    if (scrollMoved) {
+  const onTouchEnd = (e) => {
+    let handled = false;
+
+    if (tapData && !tapData.moved && !scrollMoved) {
+      const dt = Date.now() - tapData.time;
+      if (dt < TAP_TIME_LIMIT) {
+        const touch = e.changedTouches && e.changedTouches[0];
+        if (touch) {
+          let el = document.elementFromPoint(touch.clientX, touch.clientY);
+          if (el && el.closest && el.closest('#labels')) el = null;
+          const territory = el && el.closest ? el.closest('.territory') : null;
+          if (territory && interactive && !isFullscreen && editMode) {
+            handled = true;
+            try {
+              handleTerritoryClick(territory.id, territory);
+            } catch (err) {
+              console.error('tap error:', err);
+            }
+          }
+        }
+      }
+    }
+
+    if (handled || scrollMoved || (tapData && tapData.moved)) {
       container._suppressClick = true;
-      setTimeout(() => { container._suppressClick = false; }, 100);
-      scrollMoved = false;
+      setTimeout(() => { container._suppressClick = false; }, 250);
     }
+
+    tapData = null;
+    scrollTouchY = null;
+    scrollMoved = false;
   };
 
+  const onTouchCancel = () => {
+    tapData = null;
+    scrollTouchY = null;
+    scrollMoved = false;
+  };
+
+  // ⭐ touchmove с passive: false — иначе нельзя preventDefault
   container.addEventListener('touchstart', onTouchStart, { passive: true });
-  container.addEventListener('touchmove', onTouchMove, { passive: true });
+  container.addEventListener('touchmove', onTouchMove, { passive: false });
   container.addEventListener('touchend', onTouchEnd, { passive: true });
+  container.addEventListener('touchcancel', onTouchCancel, { passive: true });
 
   /* Fullscreen */
   const enterFullscreen = async () => {
@@ -151,7 +217,6 @@ function addMapControls(container, pz, interactive) {
     render();
     applyInteraction();
     container.classList.add('is-fullscreen');
-
     try {
       if (container.requestFullscreen) await container.requestFullscreen();
       else if (container.webkitRequestFullscreen) await container.webkitRequestFullscreen();
@@ -161,7 +226,6 @@ function addMapControls(container, pz, interactive) {
         document.body.classList.add('no-scroll');
       }
     } catch (e) { console.warn('fullscreen error:', e); }
-
     setTimeout(() => { pz.resize(); pz.fit(); pz.center(); }, 200);
   };
 
@@ -251,58 +315,67 @@ export async function initMap({ containerId, interactive = false, clickHandler =
   svgRoot.removeAttribute('width');
   svgRoot.removeAttribute('height');
 
+  // ⭐ Подсказка «Торговые посты»
+  addTradeLegend(container);
+
+  const handleTerritoryClick = (id, el) => {
+    if (container._suppressClick) return;
+    if (!interactive) return;
+    if (container.classList.contains('is-fullscreen')) return;
+    if (container._getEditMode && !container._getEditMode()) return;
+    if (clickHandler) clickHandler(id, el);
+    else toggleSelection(el);
+  };
+
+  onTerritoryClick = clickHandler;
+
   if (typeof svgPanZoom === 'function') {
-  try {
-    panZoom = svgPanZoom(svgRoot, {
-      zoomEnabled: true, controlIconsEnabled: false,
-      fit: true, center: true,
-      minZoom: 0.4, maxZoom: 12,
-      zoomScaleSensitivity: 0.4,
-      preventClickEventEnabled: false
-    });
-
-    const doFit = () => {
-      try { panZoom.resize(); panZoom.fit(); panZoom.center(); } catch (e) { console.warn('fit failed:', e); }
-    };
-
-    doFit();
-    // Повторный fit через RAF + таймаут — для случаев, когда контейнер ещё не получил размеров
-    requestAnimationFrame(doFit);
-    setTimeout(doFit, 150);
-    setTimeout(doFit, 500);
-
-    // ⭐ ResizeObserver — автопересчёт при изменении размеров контейнера
     try {
-      let lastW = 0, lastH = 0;
-      const ro = new ResizeObserver(() => {
-        const w = container.clientWidth;
-        const h = container.clientHeight;
-        if (w > 0 && h > 0 && (w !== lastW || h !== lastH)) {
-          lastW = w; lastH = h;
-          doFit();
-        }
+      panZoom = svgPanZoom(svgRoot, {
+        zoomEnabled: true, controlIconsEnabled: false,
+        fit: true, center: true,
+        minZoom: 0.4, maxZoom: 12,
+        zoomScaleSensitivity: 0.4,
+        preventClickEventEnabled: false
       });
-      ro.observe(container);
-    } catch (e) { console.warn('ResizeObserver failed:', e); }
 
-    addMapControls(container, panZoom, interactive);
-  } catch (e) {
-    console.error('panZoom init failed:', e);
+      // ⭐ Явно активируем touch-зум после инициализации
+      panZoom.enableZoom();
+      if (typeof panZoom.enableTouchZoom === 'function') panZoom.enableTouchZoom();
+
+      const doFit = () => {
+        try { panZoom.resize(); panZoom.fit(); panZoom.center(); } catch (e) { console.warn('fit failed:', e); }
+      };
+      doFit();
+      requestAnimationFrame(doFit);
+      setTimeout(doFit, 150);
+      setTimeout(doFit, 500);
+
+      try {
+        let lastW = 0, lastH = 0;
+        const ro = new ResizeObserver(() => {
+          const w = container.clientWidth;
+          const h = container.clientHeight;
+          if (w > 0 && h > 0 && (w !== lastW || h !== lastH)) {
+            lastW = w; lastH = h;
+            doFit();
+          }
+        });
+        ro.observe(container);
+      } catch (e) { console.warn('ResizeObserver failed:', e); }
+
+      addMapControls(container, panZoom, interactive, handleTerritoryClick);
+    } catch (e) {
+      console.error('panZoom init failed:', e);
+    }
   }
-}
 
   await loadAllData();
-  onTerritoryClick = clickHandler;
+
   svgRoot.querySelectorAll('.territory').forEach(t => {
     t.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (container._suppressClick) return;
-      if (!interactive) return;
-      if (container.classList.contains('is-fullscreen')) return;
-      // ⭐ Клик работает только если карандаш включён
-      if (container._getEditMode && !container._getEditMode()) return;
-      if (onTerritoryClick) onTerritoryClick(t.id, t);
-      else toggleSelection(t);
+      handleTerritoryClick(t.id, t);
     });
   });
 
@@ -315,9 +388,7 @@ export async function initMap({ containerId, interactive = false, clickHandler =
 export function setupLabelsToggle(buttonId) {
   const btn = document.getElementById(buttonId);
   if (!btn) return;
-
   let visible = localStorage.getItem(LABELS_STATE_KEY) !== 'false';
-
   const updateBtn = () => {
     if (visible) {
       btn.innerHTML = '<i class="fas fa-eye mr-1"></i>Подписи вкл';
@@ -330,7 +401,6 @@ export function setupLabelsToggle(buttonId) {
     }
     toggleLabels(visible);
   };
-
   updateBtn();
   btn.addEventListener('click', () => {
     visible = !visible;
@@ -435,16 +505,11 @@ export function applyLabelSettings(settings = null) {
     const cfg = s[id] || {};
     const dx = cfg.dx || 0, dy = cfg.dy || 0;
     const rot = cfg.rotation || 0, scale = cfg.scale || 1;
-
     txt.style.transformOrigin = 'center center';
     txt.style.transformBox = 'fill-box';
     txt.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${scale})`;
-
-    if (cfg.fill !== undefined && cfg.fill !== null && cfg.fill !== '') {
-      txt.style.fill = cfg.fill;
-    } else {
-      txt.style.fill = '';
-    }
+    if (cfg.fill !== undefined && cfg.fill !== null && cfg.fill !== '') txt.style.fill = cfg.fill;
+    else txt.style.fill = '';
     txt.style.stroke = '';
     txt.style.strokeWidth = '';
     txt.style.paintOrder = '';
@@ -497,12 +562,10 @@ export function computeAllianceStats(assignments) {
 export async function exportMapPNG(withLabels) {
   try {
     if (!originalSvgText) { alert('Карта ещё не загружена.'); return; }
-
     const parser = new DOMParser();
     const doc = parser.parseFromString(originalSvgText, 'image/svg+xml');
     const svg = doc.documentElement;
     if (!svg || svg.nodeName === 'parsererror') throw new Error('Не удалось распарсить SVG');
-
     svg.removeAttribute('style');
     svg.removeAttribute('width');
     svg.removeAttribute('height');
@@ -516,11 +579,9 @@ export async function exportMapPNG(withLabels) {
       t.removeAttribute('class');
       t.removeAttribute('style');
       t.style.fill = alliance ? alliance.color : '#ffffff';
-
       const isTrade = String(t.id).startsWith('T-');
       t.style.stroke = isTrade ? TRADE_STROKE : '#000000';
       t.style.strokeWidth = isTrade ? TRADE_STROKE_WIDTH + 'px' : '1px';
-
       if (t.id === 'A') t.style.fill = '#f4f4f4';
     });
 
@@ -528,7 +589,6 @@ export async function exportMapPNG(withLabels) {
       const isDark = document.documentElement.classList.contains('dark');
       const defaultFill = isDark ? '#ffffff' : '#000000';
       const defaultStroke = isDark ? '#000000' : '#ffffff';
-
       labels.querySelectorAll('.label').forEach(txt => {
         const id = txt.dataset.id;
         const cfg = labelSettings[id] || {};
@@ -536,12 +596,10 @@ export async function exportMapPNG(withLabels) {
         const rot = cfg.rotation || 0, scale = cfg.scale || 1;
         const ox = parseFloat(txt.getAttribute('x')) || 0;
         const oy = parseFloat(txt.getAttribute('y')) || 0;
-
         const allianceId = territoryAssignments[id];
         const alliance = allianceId ? allianceMap[allianceId] : null;
         if (!alliance && hideUnassignedLabels) { txt.remove(); return; }
         txt.textContent = alliance ? alliance.tag : 'XXX';
-
         txt.removeAttribute('class');
         txt.setAttribute('transform',
           `translate(${ox + dx} ${oy + dy}) rotate(${rot}) scale(${scale}) translate(${-ox} ${-oy})`
@@ -567,7 +625,6 @@ export async function exportMapPNG(withLabels) {
     const svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(svg);
     const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-
     const width = 2000;
     const mapHeight = Math.round(width * vb[3] / vb[2]);
 
@@ -581,7 +638,6 @@ export async function exportMapPNG(withLabels) {
     const legend = buildLegend();
     const cols = Math.min(3, Math.max(1, Math.ceil(legend.length / 4)));
     const rows = legend.length ? Math.ceil(legend.length / cols) : 0;
-
     const L_FONT = 22, L_LINE = 36, L_PAD = 24, L_SWATCH = 20;
     const legendHeight = legend.length ? L_PAD * 2 + rows * L_LINE : 0;
 
@@ -589,7 +645,6 @@ export async function exportMapPNG(withLabels) {
     canvas.width = width;
     canvas.height = mapHeight + legendHeight;
     const ctx = canvas.getContext('2d');
-
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, width, mapHeight);
@@ -602,22 +657,18 @@ export async function exportMapPNG(withLabels) {
       ctx.moveTo(0, mapHeight);
       ctx.lineTo(width, mapHeight);
       ctx.stroke();
-
       const colWidth = width / cols;
       const totalTerr = (item) => item.bastions + item.general + item.trade;
-
       legend.forEach((item, i) => {
         const col = Math.floor(i / rows);
         const row = i % rows;
         const x = L_PAD + col * colWidth;
         const y = mapHeight + L_PAD + row * L_LINE + L_LINE / 2;
-
         ctx.fillStyle = item.color;
         ctx.fillRect(x, y - L_SWATCH / 2, L_SWATCH, L_SWATCH);
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 1;
         ctx.strokeRect(x, y - L_SWATCH / 2, L_SWATCH, L_SWATCH);
-
         ctx.fillStyle = '#000000';
         ctx.font = `bold ${L_FONT}px Arial, sans-serif`;
         ctx.textBaseline = 'middle';
@@ -630,7 +681,6 @@ export async function exportMapPNG(withLabels) {
     link.download = `map-217-${withLabels ? 'labels' : 'plain'}-${Date.now()}.png`;
     link.href = canvas.toDataURL('image/png');
     link.click();
-
   } catch (err) {
     console.error('exportMapPNG failed:', err);
     alert('Ошибка экспорта PNG: ' + err.message);
@@ -639,9 +689,7 @@ export async function exportMapPNG(withLabels) {
 
 function buildLegend() {
   const stats = computeAllianceStats(territoryAssignments);
-  const list = Object.values(allianceMap)
-    .sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999));
-
+  const list = Object.values(allianceMap).sort((a, b) => (a.rank ?? 999) - (b.rank ?? 999));
   return list.map((a, idx) => {
     const s = stats[a.id] || { bastions: 0, general: 0, trade: 0, total: 0 };
     return { id: a.id, tag: a.tag, color: a.color, rank: idx + 1, ...s };
