@@ -166,10 +166,39 @@
 
 <!-- Модалка скачивания -->
 <div id="modal-download" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50 p-4">
-  <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm text-center">
-    <h3 class="text-xl font-bold mb-4">Сохранить карту</h3>
-    <button id="btn-download-labels" class="w-full bg-blue-600 text-white py-2 rounded mb-2 hover:bg-blue-700">С подписями</button>
-    <button id="btn-download-plain" class="w-full bg-gray-600 text-white py-2 rounded mb-2 hover:bg-gray-700">Без подписей</button>
+  <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+    <h3 class="text-xl font-bold mb-4 text-center">Сохранить карту</h3>
+
+    <!-- Светлая тема -->
+    <div class="mb-4">
+      <p class="text-xs uppercase font-semibold text-gray-500 mb-2 tracking-wide">
+        <i class="fas fa-sun mr-1 text-yellow-500"></i>Светлая тема
+      </p>
+      <div class="grid grid-cols-2 gap-2">
+        <button data-download="light-labels" class="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-semibold">
+          <i class="fas fa-font mr-1"></i>С подписями
+        </button>
+        <button data-download="light-plain" class="px-3 py-2 bg-blue-400 text-white rounded hover:bg-blue-500 text-sm">
+          <i class="fas fa-ban mr-1"></i>Без подписей
+        </button>
+      </div>
+    </div>
+
+    <!-- Тёмная тема -->
+    <div class="mb-4">
+      <p class="text-xs uppercase font-semibold text-gray-500 mb-2 tracking-wide">
+        <i class="fas fa-moon mr-1 text-indigo-400"></i>Тёмная тема
+      </p>
+      <div class="grid grid-cols-2 gap-2">
+        <button data-download="dark-labels" class="px-3 py-2 bg-gray-900 text-white rounded hover:bg-gray-800 border border-gray-700 text-sm font-semibold">
+          <i class="fas fa-font mr-1"></i>С подписями
+        </button>
+        <button data-download="dark-plain" class="px-3 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm">
+          <i class="fas fa-ban mr-1"></i>Без подписей
+        </button>
+      </div>
+    </div>
+
     <button id="btn-close-download" class="w-full text-sm text-gray-500 hover:underline mt-2">Отмена</button>
   </div>
 </div>

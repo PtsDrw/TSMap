@@ -197,10 +197,15 @@ function initUIBindings() {
   });
 
 
-  on('btn-download', 'click', () => document.getElementById('modal-download').classList.remove('hidden'));
-  on('btn-download-labels', 'click', () => { document.getElementById('modal-download').classList.add('hidden'); exportMapPNG(true); });
-  on('btn-download-plain', 'click', () => { document.getElementById('modal-download').classList.add('hidden'); exportMapPNG(false); });
-  on('btn-close-download', 'click', () => document.getElementById('modal-download').classList.add('hidden'));
+on('btn-download', 'click', () => document.getElementById('modal-download').classList.remove('hidden'));
+document.getElementById('modal-download').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-download]');
+  if (!btn) return;
+  const [theme, mode] = btn.dataset.download.split('-');
+  document.getElementById('modal-download').classList.add('hidden');
+  exportMapPNG(mode === 'labels', theme);
+});
+on('btn-close-download', 'click', () => document.getElementById('modal-download').classList.add('hidden'));
 
   renderFilters();
 

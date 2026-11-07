@@ -505,7 +505,12 @@ function updateSlidersFromSelection() {
 function initToolbar() {
   setupLabelsToggle('btn-toggle-labels');
   document.getElementById('btn-download').addEventListener('click', () => document.getElementById('modal-download').classList.remove('hidden'));
-  document.getElementById('btn-download-labels').addEventListener('click', () => { document.getElementById('modal-download').classList.add('hidden'); exportMapPNG(true); });
-  document.getElementById('btn-download-plain').addEventListener('click', () => { document.getElementById('modal-download').classList.add('hidden'); exportMapPNG(false); });
+  document.getElementById('modal-download').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-download]');
+    if (!btn) return;
+    const [theme, mode] = btn.dataset.download.split('-');
+    document.getElementById('modal-download').classList.add('hidden');
+    exportMapPNG(mode === 'labels', theme);
+  });
   document.getElementById('btn-close-download').addEventListener('click', () => document.getElementById('modal-download').classList.add('hidden'));
 }

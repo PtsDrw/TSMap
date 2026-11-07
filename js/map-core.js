@@ -14,7 +14,8 @@ let hideUnassignedLabels = false;
 
 const FALLBACK_VIEWBOX = [-10, -10, 550, 542];
 const LABELS_STATE_KEY = 'ts_labels_visible';
-const TRADE_STROKE = '#f59e0b';
+const TRADE_STROKE_LIGHT = '#f59e0b';
+const TRADE_STROKE_DARK = '#fbbf24';
 const TRADE_STROKE_WIDTH = '2.5';
 
 const TERRITORY_TYPES = {
@@ -49,9 +50,6 @@ function safeParseViewBox(str) {
   } catch { return null; }
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   ПОДСКАЗКА «ТОРГОВЫЕ ПОСТЫ»
-   ═══════════════════════════════════════════════════════════════════ */
 function addTradeLegend(container) {
   if (!container || container.querySelector('.map-trade-legend')) return;
   const el = document.createElement('div');
@@ -60,9 +58,6 @@ function addTradeLegend(container) {
   container.appendChild(el);
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   КНОПКИ УПРАВЛЕНИЯ КАРТОЙ
-   ═══════════════════════════════════════════════════════════════════ */
 function addMapControls(container, pz, interactive, handleTerritoryClick) {
   const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
@@ -112,7 +107,6 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
       pz.enablePan();
     } else {
       pz.disablePan();
-      // ⭐ Явно включаем zoom и touch zoom — disablePan может задеть внутренние флаги
       pz.enableZoom();
       if (typeof pz.enableTouchZoom === 'function') pz.enableTouchZoom();
     }
@@ -121,7 +115,6 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
   render();
   applyInteraction();
 
-  /* ═══ Обработчики тач-событий ═══ */
   let tapData = null;
   let scrollTouchY = null;
   let scrollMoved = false;
@@ -137,8 +130,6 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
   };
 
   const onTouchMove = (e) => {
-    // ⭐ 2+ пальца: блокируем браузерный pinch-to-zoom страницы,
-    //    отдаём событие библиотеке svg-pan-zoom
     if (e.touches.length >= 2) {
       if (e.cancelable) e.preventDefault();
       return;
@@ -177,9 +168,7 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
             handled = true;
             try {
               handleTerritoryClick(territory.id, territory);
-            } catch (err) {
-              console.error('tap error:', err);
-            }
+            } catch (err) { console.error('tap error:', err); }
           }
         }
       }
@@ -201,13 +190,11 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
     scrollMoved = false;
   };
 
-  // ⭐ touchmove с passive: false — иначе нельзя preventDefault
   container.addEventListener('touchstart', onTouchStart, { passive: true });
   container.addEventListener('touchmove', onTouchMove, { passive: false });
   container.addEventListener('touchend', onTouchEnd, { passive: true });
   container.addEventListener('touchcancel', onTouchCancel, { passive: true });
 
-  /* Fullscreen */
   const enterFullscreen = async () => {
     savedEdit = editMode;
     savedPan = panEnabled;
@@ -288,8 +275,6 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
   container._getEditMode = () => editMode;
 }
 
-/* ═══════════════════════════════════════════════════════════════════ */
-
 export async function initMap({ containerId, interactive = false, clickHandler = null }) {
   const container = document.getElementById(containerId);
 
@@ -315,7 +300,6 @@ export async function initMap({ containerId, interactive = false, clickHandler =
   svgRoot.removeAttribute('width');
   svgRoot.removeAttribute('height');
 
-  // ⭐ Подсказка «Торговые посты»
   addTradeLegend(container);
 
   const handleTerritoryClick = (id, el) => {
@@ -339,7 +323,6 @@ export async function initMap({ containerId, interactive = false, clickHandler =
         preventClickEventEnabled: false
       });
 
-      // ⭐ Явно активируем touch-зум после инициализации
       panZoom.enableZoom();
       if (typeof panZoom.enableTouchZoom === 'function') panZoom.enableTouchZoom();
 
@@ -382,8 +365,6 @@ export async function initMap({ containerId, interactive = false, clickHandler =
   applyAll();
   return { panZoom, svgRoot };
 }
-
-/* ═══════════════════════════════════════════════════════════════════ */
 
 export function setupLabelsToggle(buttonId) {
   const btn = document.getElementById(buttonId);
@@ -559,9 +540,24 @@ export function computeAllianceStats(assignments) {
   return stats;
 }
 
-export async function exportMapPNG(withLabels) {
+// ⭐ EXPORT PNG с поддержкой темы
+export async function exportMapPNG(withLabels, theme = 'light') {
   try {
     if (!originalSvgText) { alert('Карта ещё не загружена.'); return; }
+    const isDark = theme === 'dark';
+
+    // Цвета в зависимости от выбранной темы (не от темы страницы)
+    const canvasBg = isDark ? '#1e293b' : '#ffffff';
+    const emptyFill = isDark ? '#334155' : '#ffffff';
+    const arcadiaFill = isDark ? '#0f172a' : '#f4f4f4';
+    const territoryStroke = isDark ? '#94a3b8' : '#000000';
+    const tradeStroke = isDark ? TRADE_STROKE_DARK : TRADE_STROKE_LIGHT;
+    const labelFill = isDark ? '#ffffff' : '#000000';
+    const labelStroke = isDark ? '#000000' : '#ffffff';
+    const legendLine = isDark ? '#334155' : '#cccccc';
+    const legendText = isDark ? '#e2e8f0' : '#000000';
+    const legendBorder = isDark ? '#64748b' : '#000000';
+
     const parser = new DOMParser();
     const doc = parser.parseFromString(originalSvgText, 'image/svg+xml');
     const svg = doc.documentElement;
@@ -578,17 +574,14 @@ export async function exportMapPNG(withLabels) {
       const alliance = allianceId ? allianceMap[allianceId] : null;
       t.removeAttribute('class');
       t.removeAttribute('style');
-      t.style.fill = alliance ? alliance.color : '#ffffff';
+      t.style.fill = alliance ? alliance.color : emptyFill;
       const isTrade = String(t.id).startsWith('T-');
-      t.style.stroke = isTrade ? TRADE_STROKE : '#000000';
+      t.style.stroke = isTrade ? tradeStroke : territoryStroke;
       t.style.strokeWidth = isTrade ? TRADE_STROKE_WIDTH + 'px' : '1px';
-      if (t.id === 'A') t.style.fill = '#f4f4f4';
+      if (t.id === 'A') t.style.fill = arcadiaFill;
     });
 
     if (withLabels && labels) {
-      const isDark = document.documentElement.classList.contains('dark');
-      const defaultFill = isDark ? '#ffffff' : '#000000';
-      const defaultStroke = isDark ? '#000000' : '#ffffff';
       labels.querySelectorAll('.label').forEach(txt => {
         const id = txt.dataset.id;
         const cfg = labelSettings[id] || {};
@@ -604,8 +597,8 @@ export async function exportMapPNG(withLabels) {
         txt.setAttribute('transform',
           `translate(${ox + dx} ${oy + dy}) rotate(${rot}) scale(${scale}) translate(${-ox} ${-oy})`
         );
-        txt.style.fill = cfg.fill || defaultFill;
-        txt.style.stroke = defaultStroke;
+        txt.style.fill = cfg.fill || labelFill;
+        txt.style.stroke = labelStroke;
         txt.style.strokeWidth = '2px';
         txt.style.strokeLinejoin = 'round';
         txt.style.paintOrder = 'stroke';
@@ -645,31 +638,38 @@ export async function exportMapPNG(withLabels) {
     canvas.width = width;
     canvas.height = mapHeight + legendHeight;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
+
+    // Фон всей картинки
+    ctx.fillStyle = canvasBg;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, width, mapHeight);
     URL.revokeObjectURL(url);
 
+    // Легенда
     if (legend.length) {
-      ctx.strokeStyle = '#cccccc';
+      ctx.strokeStyle = legendLine;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(0, mapHeight);
       ctx.lineTo(width, mapHeight);
       ctx.stroke();
+
       const colWidth = width / cols;
       const totalTerr = (item) => item.bastions + item.general + item.trade;
+
       legend.forEach((item, i) => {
         const col = Math.floor(i / rows);
         const row = i % rows;
         const x = L_PAD + col * colWidth;
         const y = mapHeight + L_PAD + row * L_LINE + L_LINE / 2;
+
         ctx.fillStyle = item.color;
         ctx.fillRect(x, y - L_SWATCH / 2, L_SWATCH, L_SWATCH);
-        ctx.strokeStyle = '#000000';
+        ctx.strokeStyle = legendBorder;
         ctx.lineWidth = 1;
         ctx.strokeRect(x, y - L_SWATCH / 2, L_SWATCH, L_SWATCH);
-        ctx.fillStyle = '#000000';
+
+        ctx.fillStyle = legendText;
         ctx.font = `bold ${L_FONT}px Arial, sans-serif`;
         ctx.textBaseline = 'middle';
         const text = `${item.rank}. ${item.tag} — ${totalTerr(item)}  |  Б:${item.bastions} Г:${item.general} Т:${item.trade}`;
@@ -678,7 +678,7 @@ export async function exportMapPNG(withLabels) {
     }
 
     const link = document.createElement('a');
-    link.download = `map-217-${withLabels ? 'labels' : 'plain'}-${Date.now()}.png`;
+    link.download = `map-217-${theme}-${withLabels ? 'labels' : 'plain'}-${Date.now()}.png`;
     link.href = canvas.toDataURL('image/png');
     link.click();
   } catch (err) {

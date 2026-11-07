@@ -23,8 +23,18 @@ async function initMapAndData() {
   await renderAlliancesList();
 
   document.getElementById('btn-download').addEventListener('click', () => {
-    document.getElementById('modal-download').classList.remove('hidden');
-  });
+  document.getElementById('modal-download').classList.remove('hidden');
+});
+document.getElementById('modal-download').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-download]');
+  if (!btn) return;
+  const [theme, mode] = btn.dataset.download.split('-');
+  document.getElementById('modal-download').classList.add('hidden');
+  await exportMapPNG(mode === 'labels', theme);
+});
+document.getElementById('btn-close-download').addEventListener('click', () => {
+  document.getElementById('modal-download').classList.add('hidden');
+});
   document.getElementById('btn-download-labels').addEventListener('click', async () => {
     document.getElementById('modal-download').classList.add('hidden');
     await exportMapPNG(true);
