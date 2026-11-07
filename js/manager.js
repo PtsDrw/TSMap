@@ -138,6 +138,24 @@ function saveWorkingToSession() {
   }));
 }
 
+// ⭐ Сохраняет в существующий layout ИЛИ создаёт новый, если документ удалён
+async function updateLayoutOrCreate(updateData, fallbackFullData) {
+  if (savedLayoutId) {
+    try {
+      await updateDoc(doc(db, 'layouts', savedLayoutId), updateData);
+      return savedLayoutId;
+    } catch (e) {
+      const isNotFound = e.code === 'not-found' || /No document to update/i.test(e.message || '');
+      if (!isNotFound) throw e;
+      console.warn('[manager] savedLayoutId указывает на удалённый документ, создаём новый:', savedLayoutId);
+      savedLayoutId = null;
+    }
+  }
+  const ref = await addDoc(collection(db, 'layouts'), fallbackFullData);
+  savedLayoutId = ref.id;
+  return savedLayoutId;
+}
+
 // ==== КЛИК ====
 function onTerritoryClick(id, el) {
   if (!mapReady) return;
@@ -518,27 +536,43 @@ function applyGlobalLabelStyle(key, value) {
 async function doSaveLayout() {
   const name = document.getElementById('save-name').value.trim() || nowString();
   const description = document.getElementById('save-desc').value.trim();
-  const data = { name, description, authorId: session.keyId, authorName: session.name, date: serverTimestamp(), status: 'draft', data: { alliances: workingAlliances, assignments: workingAssignments } };
+  const data = {
+    name, description,
+    authorId: session.keyId, authorName: session.name,
+    date: serverTimestamp(),
+    status: 'draft',
+    data: { alliances: workingAlliances, assignments: workingAssignments }
+  };
   try {
-    if (savedLayoutId) await updateDoc(doc(db, 'layouts', savedLayoutId), data);
-    else { const ref = await addDoc(collection(db, 'layouts'), data); savedLayoutId = ref.id; }
+    await updateLayoutOrCreate(data, data);
     saveWorkingToSession();
     document.getElementById('modal-save').classList.add('hidden');
     toast('Сохранено', 'success');
-  } catch (e) { toast('Ошибка сохранения: ' + e.message, 'error'); }
+  } catch (e) {
+    console.error(e);
+    toast('Ошибка сохранения: ' + e.message, 'error');
+  }
 }
 
 async function doSubmitForApproval() {
   const name = document.getElementById('submit-name').value.trim() || nowString();
   const description = document.getElementById('submit-desc').value.trim();
-  const data = { name, description, authorId: session.keyId, authorName: session.name, date: serverTimestamp(), status: 'pending', data: { alliances: workingAlliances, assignments: workingAssignments } };
+  const data = {
+    name, description,
+    authorId: session.keyId, authorName: session.name,
+    date: serverTimestamp(),
+    status: 'pending',
+    data: { alliances: workingAlliances, assignments: workingAssignments }
+  };
   try {
-    if (savedLayoutId) await updateDoc(doc(db, 'layouts', savedLayoutId), data);
-    else { const ref = await addDoc(collection(db, 'layouts'), data); savedLayoutId = ref.id; }
+    await updateLayoutOrCreate(data, data);
     saveWorkingToSession();
     document.getElementById('modal-submit').classList.add('hidden');
     toast('Отправлено', 'success');
-  } catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+  } catch (e) {
+    console.error(e);
+    toast('Ошибка: ' + e.message, 'error');
+  }
 }
 
 async function doApprove() {
@@ -553,8 +587,16 @@ async function doApprove() {
       const a = workingAlliances[i];
       await setDoc(doc(db, 'alliances', a.id), { tag: a.tag, name: a.name || '', color: a.color, rank: i + 1 });
     }
-    if (savedLayoutId) await updateDoc(doc(db, 'layouts', savedLayoutId), { status: 'approved', approvedAt: serverTimestamp() });
-    else { const ref = await addDoc(collection(db, 'layouts'), { name: nowString(), description: '', authorId: session.keyId, authorName: session.name, date: serverTimestamp(), status: 'approved', data: { alliances: workingAlliances, assignments: workingAssignments } }); savedLayoutId = ref.id; }
+        await updateLayoutOrCreate(
+      { status: 'approved', approvedAt: serverTimestamp() },
+      {
+        name: nowString(), description: '',
+        authorId: session.keyId, authorName: session.name,
+        date: serverTimestamp(),
+        status: 'approved',
+        data: { alliances: workingAlliances, assignments: workingAssignments }
+      }
+    );
     await setMeta({ approvedLayoutId: savedLayoutId });
     sessionStorage.removeItem('ts_working_' + session.keyId);
     toast('Утверждено!', 'success');
@@ -617,8 +659,14 @@ async function loadLayout(id, merge) {
 
 async function delLayout(id) {
   if (!confirm('Удалить?')) return;
-  try { await deleteDoc(doc(db, 'layouts', id)); if (savedLayoutId === id) savedLayoutId = null; await showLayoutsModal(); }
-  catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+  try {
+    await deleteDoc(doc(db, 'layouts', id));
+    if (savedLayoutId === id) {
+      savedLayoutId = null;
+      saveWorkingToSession(); // ⭐ обновляем сессию, чтобы после перезагрузки не было «висящего» id
+    }
+    await showLayoutsModal();
+  } catch (e) { toast('Ошибка: ' + e.message, 'error'); }
 }
 
 async function approveLayout(id) {

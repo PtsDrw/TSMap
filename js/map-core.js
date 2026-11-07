@@ -473,7 +473,7 @@ export function applyLabelTexts(assignments = null, alliances = null) {
     if (allianceId && a[allianceId]) {
       txt.textContent = a[allianceId].tag;
     } else {
-      txt.textContent = hideUnassignedLabels ? '' : 'XXX';
+      txt.textContent = hideUnassignedLabels ? '' : 'ABC';
     }
   });
 }
@@ -592,7 +592,7 @@ export async function exportMapPNG(withLabels, theme = 'light') {
         const allianceId = territoryAssignments[id];
         const alliance = allianceId ? allianceMap[allianceId] : null;
         if (!alliance && hideUnassignedLabels) { txt.remove(); return; }
-        txt.textContent = alliance ? alliance.tag : 'XXX';
+        txt.textContent = alliance ? alliance.tag : 'ABC';
         txt.removeAttribute('class');
         txt.setAttribute('transform',
           `translate(${ox + dx} ${oy + dy}) rotate(${rot}) scale(${scale}) translate(${-ox} ${-oy})`

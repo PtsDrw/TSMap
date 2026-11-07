@@ -45,7 +45,7 @@
   transform-origin: center;
   fill: #000;
   stroke: #fff;
-  stroke-width: 2px;
+  stroke-width: 1px;
   stroke-linejoin: round;
   paint-order: stroke;
 }
