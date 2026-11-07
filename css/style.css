@@ -1,16 +1,24 @@
-/* Основные стили карты */
 #game-map { display: block; width: 100%; height: 100%; }
 .territory {
   stroke: #000; stroke-width: 1px; fill: #fff;
   cursor: pointer; vector-effect: non-scaling-stroke;
-  transition: fill 0.15s, opacity 0.15s;
+  transition: fill 0.15s, opacity 0.15s, stroke 0.15s;
 }
 .territory:hover { fill-opacity: 0.85; }
 .territory.selected { stroke: #ff0000; stroke-width: 2.5px; }
+
+/* ⭐ Торговые посты — заметная оранжевая обводка */
+.territory.type-T:not(.selected) {
+  stroke: #f59e0b;
+  stroke-width: 2.5px;
+}
+.dark .territory.type-T:not(.selected) {
+  stroke: #fbbf24;
+}
+
 .arcadia { pointer-events: none; fill: #f4f4f4; cursor: default; }
 
-/* ⭐ Подписи: цвет по умолчанию — чёрный (светлая тема) */
-.label {
+#labels .label {
   font-family: 'Arial', sans-serif;
   font-size: 10px;
   text-anchor: middle;
@@ -20,37 +28,122 @@
   transform-box: fill-box;
   transform-origin: center;
   fill: #000;
+  stroke: #fff;
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  paint-order: stroke;
 }
 #labels { display: block; }
 
-/* Тёмная тема */
 .dark .territory { fill: #334155; stroke: #94a3b8; }
 .dark .arcadia { fill: #0f172a; }
-.dark .label { fill: #fff; }
+.dark #labels .label { fill: #fff; stroke: #000; }
+
+/* ═══ Кнопки управления картой ═══ */
+.map-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.map-controls button {
+  width: 36px;
+  height: 36px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: #334155;
+  transition: background 0.15s, transform 0.1s;
+}
+.map-controls button:hover { background: #fff; }
+.map-controls button:active { transform: scale(0.94); }
+.map-controls button.active {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #2563eb;
+}
+.dark .map-controls button {
+  background: rgba(30, 41, 59, 0.95);
+  border-color: #475569;
+  color: #e5e7eb;
+}
+.dark .map-controls button:hover { background: #1e293b; }
+.dark .map-controls button.active {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #2563eb;
+}
+
+/* ═══ Fullscreen режим ═══ */
+#map-container.is-fullscreen,
+#map-container.fullscreen-fallback {
+  background: #f8fafc;
+}
+.dark #map-container.is-fullscreen,
+.dark #map-container.fullscreen-fallback {
+  background: #1e293b;
+}
+
+#map-container.fullscreen-fallback {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 9999 !important;
+  border-radius: 0 !important;
+  border-width: 0 !important;
+}
+
+body.no-scroll { overflow: hidden !important; }
 
 * { transition-property: background-color, border-color, color; transition-duration: 0.2s; }
-
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
 .dark ::-webkit-scrollbar-thumb { background: #475569; }
 
-details summary { user-select: none; }
-details summary::-webkit-details-marker { display: none; }
-details summary::before { content: "▸ "; }
-details[open] summary::before { content: "▾ "; }
+/* ═══════════════════════════════════════════════════════════════
+   Details/Summary — стрелка СТРЕЛКА СПРАВА, без дублей
+   ═══════════════════════════════════════════════════════════════ */
+details > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 36px !important;
+}
 
-/* Плавные переходы */
-* { transition-property: background-color, border-color, color; transition-duration: 0.2s; }
+/* Убираем дефолтные маркеры во всех браузерах */
+details > summary::-webkit-details-marker { display: none; }
+details > summary::marker { content: ''; }
+details > summary { -webkit-details-marker: none; }
 
-/* Скроллбар */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
-.dark ::-webkit-scrollbar-thumb { background: #475569; }
-
-/* Стили для details */
-details summary { user-select: none; }
-details summary::-webkit-details-marker { display: none; }
-details summary::before { content: "▸ "; }
-details[open] summary::before { content: "▾ "; }
+/* Своя стрелка справа, плавно поворачивается */
+details > summary::after {
+  content: "▶";
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 9px;
+  color: #64748b;
+  transition: transform 0.2s ease;
+  pointer-events: none;
+  font-weight: normal;
+  line-height: 1;
+}
+details[open] > summary::after {
+  transform: translateY(-50%) rotate(90deg);
+}
+.dark details > summary::after {
+  color: #94a3b8;
+}

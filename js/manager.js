@@ -8,7 +8,8 @@ import {
   initMap, toggleLabels, exportMapPNG, getLabelSettings, setLabelSettings,
   saveLabelSettings, selectTerritory, getSelected, clearSelection, selectAllFiltered,
   getAllTerritoryIds, getTerritoryTypes, getFilteredTerritories,
-  setPreviewData, getTerritoryType, getTerritoryLevel
+  setPreviewData, getTerritoryType, getTerritoryLevel, setupLabelsToggle,
+  computeAllianceStats
 } from './map-core.js';
 import { requireAuth, logout } from './auth.js';
 import { randomColor } from './palette.js';
@@ -194,10 +195,7 @@ function initUIBindings() {
     r.addEventListener('change', e => { mode = e.target.value; clearSelection(); renderAll(); });
   });
 
-  on('btn-toggle-labels', 'click', () => {
-    const l = document.getElementById('labels');
-    if (l) toggleLabels(l.style.display === 'none');
-  });
+
   on('btn-download', 'click', () => document.getElementById('modal-download').classList.remove('hidden'));
   on('btn-download-labels', 'click', () => { document.getElementById('modal-download').classList.add('hidden'); exportMapPNG(true); });
   on('btn-download-plain', 'click', () => { document.getElementById('modal-download').classList.add('hidden'); exportMapPNG(false); });
@@ -311,6 +309,8 @@ function initUIBindings() {
 
   on('btn-load-layouts', 'click', showLayoutsModal);
   on('btn-close-layouts', 'click', () => document.getElementById('modal-layouts').classList.add('hidden'));
+
+  setupLabelsToggle('btn-toggle-labels');
 }
 
 function renderFilters() {
@@ -384,17 +384,34 @@ function renderAlliancesList() {
     list.innerHTML = '<p class="text-center text-gray-500 py-2 text-sm">Нет союзов. Нажмите «Добавить союз».</p>';
     return;
   }
-  list.innerHTML = workingAlliances.map((a, i) => `
-    <div class="flex items-center p-2 bg-white dark:bg-gray-800 rounded mb-1 shadow-sm border dark:border-gray-700">
-      <span class="w-3 h-3 rounded-full mr-2 flex-shrink-0" style="background:${a.color}"></span>
-      <span class="font-bold w-6 text-sm">${i + 1}</span>
-      <span class="font-mono font-semibold text-sm">${a.tag}</span>
-      <span class="ml-2 text-xs text-gray-500 flex-1 truncate">${a.name || ''}</span>
-      <button class="rank-up text-blue-500 px-1 disabled:opacity-30" data-id="${a.id}" ${i === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
-      <button class="rank-down text-blue-500 px-1 disabled:opacity-30" data-id="${a.id}" ${i === workingAlliances.length - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>
-      <button class="edit-alliance text-yellow-600 px-1" data-id="${a.id}"><i class="fas fa-pen"></i></button>
-      <button class="del-alliance text-red-500 px-1" data-id="${a.id}"><i class="fas fa-trash"></i></button>
-    </div>`).join('');
+
+  // ⭐ Статистика по ТЕКУЩИМ (рабочим) назначениям — сразу видно результат распределения
+  const stats = computeAllianceStats(workingAssignments);
+
+  list.innerHTML = workingAlliances.map((a, i) => {
+    const s = stats[a.id] || { bastions: 0, general: 0, trade: 0, total: 0 };
+    return `
+      <div class="flex items-center gap-1 p-2 bg-white dark:bg-gray-800 rounded mb-1 shadow-sm border dark:border-gray-700">
+        <span class="w-3 h-3 rounded-full flex-shrink-0" style="background:${a.color}"></span>
+        <span class="font-bold w-6 text-sm">${i + 1}</span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-baseline gap-1">
+            <span class="font-mono font-semibold text-sm">${a.tag}</span>
+            <span class="text-xs text-gray-500 truncate">${a.name || ''}</span>
+          </div>
+          <div class="text-[10px] text-gray-500 dark:text-gray-400 flex flex-wrap gap-x-2 gap-y-0.5">
+            <span><b class="text-gray-700 dark:text-gray-200">${s.total}</b> всего</span>
+            <span>Б:<b class="text-gray-700 dark:text-gray-200">${s.bastions}</b></span>
+            <span>Г:<b class="text-gray-700 dark:text-gray-200">${s.general}</b></span>
+            <span>Т:<b class="text-gray-700 dark:text-gray-200">${s.trade}</b></span>
+          </div>
+        </div>
+        <button class="rank-up text-blue-500 px-1 disabled:opacity-30" data-id="${a.id}" ${i === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
+        <button class="rank-down text-blue-500 px-1 disabled:opacity-30" data-id="${a.id}" ${i === workingAlliances.length - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>
+        <button class="edit-alliance text-yellow-600 px-1" data-id="${a.id}"><i class="fas fa-pen"></i></button>
+        <button class="del-alliance text-red-500 px-1" data-id="${a.id}"><i class="fas fa-trash"></i></button>
+      </div>`;
+  }).join('');
 
   list.querySelectorAll('.rank-up').forEach(b => b.addEventListener('click', () => moveRank(b.dataset.id, -1)));
   list.querySelectorAll('.rank-down').forEach(b => b.addEventListener('click', () => moveRank(b.dataset.id, 1)));

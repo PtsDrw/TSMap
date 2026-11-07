@@ -6,7 +6,7 @@ import { initTheme, generateKey, toast } from './utils.js';
 import {
   initMap, toggleLabels, exportMapPNG, getLabelSettings, saveLabelSettings,
   selectTerritory, getSelected, clearSelection, selectAllFiltered, getAllTerritoryIds,
-  setLabelSettings, setPreviewData
+  setLabelSettings, setPreviewData, setupLabelsToggle
 } from './map-core.js';
 import { requireAuth, logout } from './auth.js';
 import { randomColor } from './palette.js';
@@ -448,10 +448,7 @@ function updateSlidersFromSelection() {
 
 // ==== ТУЛБАР ====
 function initToolbar() {
-  document.getElementById('btn-toggle-labels').addEventListener('click', () => {
-    const l = document.getElementById('labels');
-    if (l) toggleLabels(l.style.display === 'none');
-  });
+  setupLabelsToggle('btn-toggle-labels');
   document.getElementById('btn-download').addEventListener('click', () => document.getElementById('modal-download').classList.remove('hidden'));
   document.getElementById('btn-download-labels').addEventListener('click', () => { document.getElementById('modal-download').classList.add('hidden'); exportMapPNG(true); });
   document.getElementById('btn-download-plain').addEventListener('click', () => { document.getElementById('modal-download').classList.add('hidden'); exportMapPNG(false); });

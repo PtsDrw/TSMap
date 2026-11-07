@@ -1,7 +1,10 @@
 import { db } from './firebase-config.js';
 import { collection, getDocs } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 import { initTheme, toast } from './utils.js';
-import { initMap, toggleLabels, exportMapPNG } from './map-core.js';
+import {
+  initMap, setupLabelsToggle, setHideUnassignedLabels, exportMapPNG,
+  getTerritoryAssignments, computeAllianceStats
+} from './map-core.js';
 import { loginWithKey, loginAdmin } from './auth.js';
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -11,18 +14,17 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initMapAndData() {
-  await initMap({ containerId: 'map-container', interactive: false });
-  await renderAlliancesList();
+  const map = await initMap({ containerId: 'map-container', interactive: false });
+  if (!map) return;
 
-  document.getElementById('btn-toggle-labels').addEventListener('click', () => {
-    const labels = document.getElementById('labels');
-    if (labels) toggleLabels(labels.style.display === 'none');
-  });
+  setHideUnassignedLabels(true);
+  setupLabelsToggle('btn-toggle-labels');
+
+  await renderAlliancesList();
 
   document.getElementById('btn-download').addEventListener('click', () => {
     document.getElementById('modal-download').classList.remove('hidden');
   });
-
   document.getElementById('btn-download-labels').addEventListener('click', async () => {
     document.getElementById('modal-download').classList.add('hidden');
     await exportMapPNG(true);
@@ -47,14 +49,31 @@ async function renderAlliancesList() {
     list.innerHTML = '<p class="text-center text-gray-500 dark:text-gray-400 py-4">Пока нет добавленных союзов</p>';
     return;
   }
-  list.innerHTML = alliances.map((a, i) => `
-    <div class="flex items-center p-3 bg-white dark:bg-gray-800 rounded shadow">
-      <span class="w-4 h-4 rounded-full mr-3 flex-shrink-0" style="background-color: ${a.color}"></span>
-      <span class="font-bold w-8">${i + 1}.</span>
-      <span class="font-mono font-semibold">${a.tag}</span>
-      ${a.name ? `<span class="ml-2 text-gray-500 dark:text-gray-400">${a.name}</span>` : ''}
-    </div>
-  `).join('');
+
+  // ⭐ Статистика по опубликованным территориям
+  const stats = computeAllianceStats(getTerritoryAssignments());
+
+  list.innerHTML = alliances.map((a, i) => {
+    const s = stats[a.id] || { bastions: 0, general: 0, trade: 0, total: 0 };
+    return `
+      <div class="flex items-center p-3 bg-white dark:bg-gray-800 rounded shadow">
+        <span class="w-4 h-4 rounded-full mr-3 flex-shrink-0" style="background-color: ${a.color}"></span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-baseline flex-wrap gap-x-2">
+            <span class="font-bold">${i + 1}.</span>
+            <span class="font-mono font-semibold">${a.tag}</span>
+            ${a.name ? `<span class="text-sm text-gray-500 dark:text-gray-400">${a.name}</span>` : ''}
+          </div>
+          <div class="text-xs text-gray-500 dark:text-gray-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+            <span><b class="text-gray-700 dark:text-gray-200">${s.total}</b> всего</span>
+            <span>Б: <b class="text-gray-700 dark:text-gray-200">${s.bastions}</b></span>
+            <span>Г: <b class="text-gray-700 dark:text-gray-200">${s.general}</b></span>
+            <span>Т: <b class="text-gray-700 dark:text-gray-200">${s.trade}</b></span>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 function initAuthModal() {
