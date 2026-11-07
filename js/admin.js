@@ -118,9 +118,14 @@ function onTerritoryClick(id, el) {
     const isSel = el.classList.contains('selected');
     selectTerritory(id, !isSel);
     updateSlidersFromSelection();
-  } else {
+    } else {
     if (!selectedAllianceId) { toast('Сначала выберите союз', 'error'); return; }
-    workingAssignments[id] = selectedAllianceId;
+    // ⭐ Повторный клик по территории этого же союза — снимаем назначение
+    if (workingAssignments[id] === selectedAllianceId) {
+      delete workingAssignments[id];
+    } else {
+      workingAssignments[id] = selectedAllianceId;
+    }
     hasUnsavedChanges = true;
     applyWorking();
     renderAlliances();
@@ -388,11 +393,20 @@ function deleteAlliance(id) {
 }
 
 // ==== УПРАВЛЕНИЕ КАРТОЙ ====
+// ⭐ Показывает/скрывает кнопки выделения в зависимости от режима
+function updateModeUI() {
+  const isTerritoryMode = mode === 'territory-to-alliance';
+  const selControls = document.getElementById('selection-controls');
+  if (selControls) selControls.classList.toggle('hidden', !isTerritoryMode);
+}
+
+// ==== УПРАВЛЕНИЕ КАРТОЙ ====
 function initMapDataControls() {
-  document.querySelectorAll('input[name="edit-mode"]').forEach(r => {
+    document.querySelectorAll('input[name="edit-mode"]').forEach(r => {
     r.addEventListener('change', e => {
       mode = e.target.value;
       clearSelection();
+      updateModeUI();
     });
   });
 
@@ -425,7 +439,8 @@ function initMapDataControls() {
     toast('Назначения очищены', 'success');
   });
 
-  document.getElementById('btn-save-map').addEventListener('click', saveMapData);
+    document.getElementById('btn-save-map').addEventListener('click', saveMapData);
+  updateModeUI();
 }
 
 // ==== ПОДПИСИ ====

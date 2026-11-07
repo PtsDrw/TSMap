@@ -167,9 +167,15 @@ function onTerritoryClick(id, el) {
     selectTerritory(id, !isSel);
   } else {
     if (!selectedAllianceId) { toast('Сначала выберите союз', 'error'); return; }
-    workingAssignments[id] = selectedAllianceId;
+    // ⭐ Повторный клик по территории этого же союза — снимаем назначение
+    if (workingAssignments[id] === selectedAllianceId) {
+      delete workingAssignments[id];
+    } else {
+      workingAssignments[id] = selectedAllianceId;
+    }
     applyWorking();
     saveWorkingToSession();
+    renderAlliancesList();
   }
 }
 
@@ -203,6 +209,16 @@ function applyAllianceToSelected(silent = false) {
 }
 
 // ==== UI BINDINGS ====
+// ⭐ Показывает/скрывает кнопки выделения в зависимости от режима
+function updateModeUI() {
+  const isTerritoryMode = mode === 'territory-to-alliance';
+  const selControls = document.getElementById('selection-controls');
+  const clearSel = document.getElementById('btn-clear-selected');
+  if (selControls) selControls.classList.toggle('hidden', !isTerritoryMode);
+  if (clearSel) clearSel.classList.toggle('hidden', !isTerritoryMode);
+}
+
+// ==== UI BINDINGS ====
 function initUIBindings() {
   const on = (id, ev, fn) => {
     const el = document.getElementById(id);
@@ -210,8 +226,13 @@ function initUIBindings() {
     el.addEventListener(ev, fn);
   };
 
-  document.querySelectorAll('input[name="edit-mode"]').forEach(r => {
-    r.addEventListener('change', e => { mode = e.target.value; clearSelection(); renderAll(); });
+    document.querySelectorAll('input[name="edit-mode"]').forEach(r => {
+    r.addEventListener('change', e => {
+      mode = e.target.value;
+      clearSelection();
+      renderAll();
+      updateModeUI();
+    });
   });
 
 
@@ -339,6 +360,8 @@ on('btn-close-edit-alliance', 'click', () => {
   on('btn-load-layouts', 'click', showLayoutsModal);
   on('btn-close-layouts', 'click', () => document.getElementById('modal-layouts').classList.add('hidden'));
 
+  updateModeUI();
+
   setupLabelsToggle('btn-toggle-labels');
 }
 
@@ -420,7 +443,7 @@ function renderAlliancesList() {
   list.innerHTML = workingAlliances.map((a, i) => {
     const s = stats[a.id] || { bastions: 0, general: 0, trade: 0, total: 0 };
     return `
-      <div class="flex items-center gap-1 p-2 bg-white dark:bg-gray-800 rounded mb-1 shadow-sm border dark:border-gray-700">
+      <div class="flex items-center gap-1 p-2 bg-white dark:bg-gray-800 rounded shadow-sm border dark:border-gray-700">
         <span class="w-3 h-3 rounded-full flex-shrink-0" style="background:${a.color}"></span>
         <span class="font-bold w-6 text-sm">${i + 1}</span>
         <div class="flex-1 min-w-0">
