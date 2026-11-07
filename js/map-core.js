@@ -59,9 +59,8 @@ function safeParseViewBox(str) {
 function addMapControls(container, pz, interactive) {
   const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
-  // Начальное состояние
-  let editMode = interactive && !isTouch;   // на десктопе для менеджера — сразу редактирование
-  let panEnabled = isTouch ? true : !interactive; // на мобилке/у гостя — сразу pan
+  let editMode = interactive && !isTouch;
+  let panEnabled = isTouch ? true : !interactive;
   let isFullscreen = false;
   let savedEdit = editMode;
   let savedPan = panEnabled;
@@ -80,7 +79,6 @@ function addMapControls(container, pz, interactive) {
         <i class="fas fa-${isFullscreen ? 'compress' : 'expand'}"></i>
       </button>
     `;
-
     if (interactive && !isFullscreen) {
       const editTitle = editMode
         ? 'Редактирование включено (клик по территориям)'
@@ -89,32 +87,66 @@ function addMapControls(container, pz, interactive) {
     }
     if (!isFullscreen) {
       const panTitle = panEnabled
-        ? 'Перемещение включено (карту можно двигать)'
-        : 'Перемещение выключено';
+        ? 'Перемещение включено (1 палец двигает карту)'
+        : 'Перемещение выключено (1 палец прокручивает страницу)';
       html += `<button data-action="togglePan" class="${panEnabled ? 'active' : ''}" title="${panTitle}"><i class="fas fa-arrows-alt"></i></button>`;
     }
     controls.innerHTML = html;
   };
 
+  // ⭐ Всегда touch-action: none — pinch работает всегда
   const applyInteraction = () => {
-    if (panEnabled) {
-      pz.enablePan();
-      container.style.touchAction = 'none';
-    } else {
-      pz.disablePan();
-      container.style.touchAction = 'pan-y';
-    }
+    container.style.touchAction = 'none';
+    const svg = container.querySelector('svg');
+    if (svg) svg.style.touchAction = 'none';
+
+    if (panEnabled) pz.enablePan();
+    else pz.disablePan(); // pinch продолжает работать (isPinching обрабатывается до panEnabled)
   };
 
   render();
   applyInteraction();
+
+  /* ⭐ Ручной скролл страницы при pan ВЫКЛ (1 палец) */
+  let scrollTouchY = null;
+  let scrollMoved = false;
+  const SCROLL_THRESHOLD = 5;
+
+  const onTouchStart = (e) => {
+    if (panEnabled || e.touches.length !== 1) { scrollTouchY = null; return; }
+    scrollTouchY = e.touches[0].clientY;
+    scrollMoved = false;
+  };
+
+  const onTouchMove = (e) => {
+    if (panEnabled || scrollTouchY === null || e.touches.length !== 1) return;
+    const dy = scrollTouchY - e.touches[0].clientY;
+    if (Math.abs(dy) > SCROLL_THRESHOLD) {
+      scrollMoved = true;
+      window.scrollBy(0, dy);
+      scrollTouchY = e.touches[0].clientY;
+    }
+  };
+
+  const onTouchEnd = () => {
+    scrollTouchY = null;
+    if (scrollMoved) {
+      container._suppressClick = true;
+      setTimeout(() => { container._suppressClick = false; }, 100);
+      scrollMoved = false;
+    }
+  };
+
+  container.addEventListener('touchstart', onTouchStart, { passive: true });
+  container.addEventListener('touchmove', onTouchMove, { passive: true });
+  container.addEventListener('touchend', onTouchEnd, { passive: true });
 
   /* Fullscreen */
   const enterFullscreen = async () => {
     savedEdit = editMode;
     savedPan = panEnabled;
     editMode = false;
-    panEnabled = true; // в fullscreen всегда можно двигать
+    panEnabled = true;
     isFullscreen = true;
     render();
     applyInteraction();
@@ -137,17 +169,14 @@ function addMapControls(container, pz, interactive) {
     isFullscreen = false;
     container.classList.remove('is-fullscreen', 'fullscreen-fallback');
     document.body.classList.remove('no-scroll');
-
     editMode = savedEdit;
     panEnabled = savedPan;
     render();
     applyInteraction();
-
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
       else if (document.webkitFullscreenElement) await document.webkitExitFullscreen();
     } catch (e) { console.warn('exit fullscreen error:', e); }
-
     setTimeout(() => { pz.resize(); pz.fit(); pz.center(); }, 200);
   };
 
@@ -167,7 +196,6 @@ function addMapControls(container, pz, interactive) {
   document.addEventListener('fullscreenchange', onFsChange);
   document.addEventListener('webkitfullscreenchange', onFsChange);
 
-  /* Кнопки */
   controls.addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
@@ -178,13 +206,11 @@ function addMapControls(container, pz, interactive) {
     else if (action === 'reset') { pz.resize(); pz.fit(); pz.center(); }
     else if (action === 'toggleEdit') {
       if (isFullscreen) return;
-      // ⭐ НЕ трогаем panEnabled
       editMode = !editMode;
       render();
     }
     else if (action === 'togglePan') {
       if (isFullscreen) return;
-      // ⭐ НЕ трогаем editMode
       panEnabled = !panEnabled;
       render();
       applyInteraction();
@@ -226,26 +252,51 @@ export async function initMap({ containerId, interactive = false, clickHandler =
   svgRoot.removeAttribute('height');
 
   if (typeof svgPanZoom === 'function') {
+  try {
+    panZoom = svgPanZoom(svgRoot, {
+      zoomEnabled: true, controlIconsEnabled: false,
+      fit: true, center: true,
+      minZoom: 0.4, maxZoom: 12,
+      zoomScaleSensitivity: 0.4,
+      preventClickEventEnabled: false
+    });
+
+    const doFit = () => {
+      try { panZoom.resize(); panZoom.fit(); panZoom.center(); } catch (e) { console.warn('fit failed:', e); }
+    };
+
+    doFit();
+    // Повторный fit через RAF + таймаут — для случаев, когда контейнер ещё не получил размеров
+    requestAnimationFrame(doFit);
+    setTimeout(doFit, 150);
+    setTimeout(doFit, 500);
+
+    // ⭐ ResizeObserver — автопересчёт при изменении размеров контейнера
     try {
-      panZoom = svgPanZoom(svgRoot, {
-        zoomEnabled: true, controlIconsEnabled: false,
-        fit: true, center: true,
-        minZoom: 0.4, maxZoom: 12,
-        zoomScaleSensitivity: 0.4,
-        preventClickEventEnabled: false   // ⭐ клики не блокируются после pan
+      let lastW = 0, lastH = 0;
+      const ro = new ResizeObserver(() => {
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+        if (w > 0 && h > 0 && (w !== lastW || h !== lastH)) {
+          lastW = w; lastH = h;
+          doFit();
+        }
       });
-      panZoom.resize();
-      panZoom.fit();
-      panZoom.center();
-      addMapControls(container, panZoom, interactive);
-    } catch (e) { console.warn('panZoom init failed:', e); }
+      ro.observe(container);
+    } catch (e) { console.warn('ResizeObserver failed:', e); }
+
+    addMapControls(container, panZoom, interactive);
+  } catch (e) {
+    console.error('panZoom init failed:', e);
   }
+}
 
   await loadAllData();
   onTerritoryClick = clickHandler;
   svgRoot.querySelectorAll('.territory').forEach(t => {
     t.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (container._suppressClick) return;
       if (!interactive) return;
       if (container.classList.contains('is-fullscreen')) return;
       // ⭐ Клик работает только если карандаш включён

@@ -6,7 +6,7 @@ import { initTheme, generateKey, toast } from './utils.js';
 import {
   initMap, toggleLabels, exportMapPNG, getLabelSettings, saveLabelSettings,
   selectTerritory, getSelected, clearSelection, selectAllFiltered, getAllTerritoryIds,
-  setLabelSettings, setPreviewData, setupLabelsToggle
+  setLabelSettings, setPreviewData, setupLabelsToggle, computeAllianceStats
 } from './map-core.js';
 import { requireAuth, logout } from './auth.js';
 import { randomColor } from './palette.js';
@@ -18,42 +18,78 @@ let workingAssignments = {};
 let selectedAllianceId = null;
 let mode = 'territory-to-alliance';
 let hasUnsavedChanges = false;
+let mapReady = false;
 
 // ==== ИНИЦИАЛИЗАЦИЯ ====
 document.addEventListener('DOMContentLoaded', async () => {
+  console.log('[admin] DOMContentLoaded');
   if (!requireAuth(['admin'])) return;
   initTheme();
-  document.getElementById('btn-logout').addEventListener('click', logout);
 
-  const map = await initMap({ containerId: 'map-container', interactive: true, clickHandler: onTerritoryClick });
-  if (!map) { toast('Карта не загружена — проверьте assets/map.svg', 'error'); return; }
+  const logoutBtn = document.getElementById('btn-logout');
+  if (logoutBtn) logoutBtn.addEventListener('click', logout);
 
+  // ⭐ Карта — в try/catch, не блокируем остальной UI
   try {
-    await loadMapData();
-    await renderKeysList();
-    renderAlliances();
-    renderAllianceSelect();
+    const container = document.getElementById('map-container');
+    console.log('[admin] map container size before init:', container?.clientWidth, 'x', container?.clientHeight);
+
+    const map = await initMap({
+      containerId: 'map-container',
+      interactive: true,
+      clickHandler: onTerritoryClick
+    });
+
+    if (map) {
+      mapReady = true;
+      console.log('[admin] map ready');
+    } else {
+      console.error('[admin] initMap returned null');
+      if (container) {
+        container.innerHTML = `
+          <div class="p-6 text-center text-red-500">
+            <p class="font-bold text-lg mb-2"><i class="fas fa-exclamation-triangle mr-2"></i>Карта не загружена</p>
+            <p class="text-sm">Проверьте, что файл <code>assets/map.svg</code> существует.</p>
+          </div>`;
+      }
+      toast('Карта не загружена — проверьте assets/map.svg', 'error');
+    }
   } catch (e) {
-    console.error(e);
-    toast('Ошибка загрузки данных: ' + e.message, 'error');
+    console.error('[admin] initMap failed:', e);
+    toast('Ошибка карты: ' + e.message, 'error');
   }
 
-  initKeyModal();
-  initAllianceModal();
-  initMapDataControls();
-  initLabelControls();
-  initToolbar();
+  // ⭐ Данные — тоже в try/catch, чтобы UI не ломался
+  try {
+    await loadMapData();
+    console.log('[admin] data loaded:', workingAlliances.length, 'alliances,', Object.keys(workingAssignments).length, 'assignments');
+  } catch (e) {
+    console.error('[admin] loadMapData failed:', e);
+    toast('Ошибка данных: ' + e.message, 'error');
+  }
 
-  // Предупреждение при закрытии с несохранёнными изменениями
+  try { await renderKeysList(); } catch (e) { console.error('[admin] renderKeysList:', e); }
+  try { renderAlliances(); } catch (e) { console.error('[admin] renderAlliances:', e); }
+  try { renderAllianceSelect(); } catch (e) { console.error('[admin] renderAllianceSelect:', e); }
+
+  // ⭐ Привязка UI — ВСЕГДА (даже без карты)
+  try { initKeyModal(); } catch (e) { console.error('[admin] initKeyModal:', e); }
+  try { initAllianceModal(); } catch (e) { console.error('[admin] initAllianceModal:', e); }
+  try { initMapDataControls(); } catch (e) { console.error('[admin] initMapDataControls:', e); }
+  try { initLabelControls(); } catch (e) { console.error('[admin] initLabelControls:', e); }
+  try { initToolbar(); } catch (e) { console.error('[admin] initToolbar:', e); }
+
   window.addEventListener('beforeunload', (e) => {
     if (hasUnsavedChanges) {
       e.preventDefault();
       e.returnValue = '';
     }
   });
+
+  console.log('[admin] init complete');
 });
 
-// ==== ЗАГРУЗКА ДАННЫХ КАРТЫ ====
+// ==== ДАННЫЕ ====
 async function loadMapData() {
   const al = await getDocs(collection(db, 'alliances'));
   workingAlliances = [];
@@ -74,7 +110,7 @@ function applyWorking() {
   );
 }
 
-// ==== КЛИК ПО ТЕРРИТОРИИ ====
+// ==== КЛИК ====
 function onTerritoryClick(id, el) {
   if (id === 'A') return;
 
@@ -87,10 +123,10 @@ function onTerritoryClick(id, el) {
     workingAssignments[id] = selectedAllianceId;
     hasUnsavedChanges = true;
     applyWorking();
+    renderAlliances();
   }
 }
 
-// ==== ПРИМЕНЕНИЕ СОЮЗА К ВЫБРАННЫМ ====
 function applyAllianceToSelected(silent = false) {
   if (!selectedAllianceId) {
     if (!silent) toast('Выберите союз из списка', 'error');
@@ -108,10 +144,10 @@ function applyAllianceToSelected(silent = false) {
   clearSelection();
   applyWorking();
   hasUnsavedChanges = true;
+  renderAlliances();
   toast(`Назначено: ${sel.length} → ${alliance.tag}`, 'success');
 }
 
-// ==== СОХРАНЕНИЕ КАРТЫ (союзы + территории) ====
 async function saveMapData() {
   try {
     toast('Сохранение...', 'info');
@@ -142,6 +178,7 @@ async function saveMapData() {
 // ==== КЛЮЧИ ====
 async function renderKeysList() {
   const list = document.getElementById('keys-list');
+  if (!list) return;
   const snap = await getDocs(collection(db, 'access_keys'));
   const keys = [];
   snap.forEach(d => keys.push({ id: d.id, ...d.data() }));
@@ -193,7 +230,8 @@ function initKeyModal() {
   const nameInput = document.getElementById('key-name');
   const mainCheck = document.getElementById('key-main');
 
-  document.getElementById('btn-create-key').addEventListener('click', () => {
+  document.getElementById('btn-create-key').addEventListener('click', (e) => {
+    e.stopPropagation();
     currentKeyId = null;
     gen.value = generateKey();
     nameInput.value = '';
@@ -236,18 +274,33 @@ function renderAlliances() {
     list.innerHTML = '<p class="text-center text-gray-500 py-2 text-xs">Нет союзов. Нажмите «+».</p>';
     return;
   }
-  list.innerHTML = workingAlliances.map((a, i) => `
-    <div class="flex items-center gap-1 py-1.5 border-b dark:border-gray-700 text-xs">
-      <span class="w-3 h-3 rounded-full flex-shrink-0" style="background:${a.color}"></span>
-      <span class="w-5 text-gray-500">${i + 1}.</span>
-      <span class="font-mono font-semibold">${a.tag}</span>
-      <span class="flex-1 truncate text-gray-500">${a.name || ''}</span>
-      <button class="rank-up text-blue-500 px-0.5 disabled:opacity-30" data-id="${a.id}" ${i === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
-      <button class="rank-down text-blue-500 px-0.5 disabled:opacity-30" data-id="${a.id}" ${i === workingAlliances.length - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>
-      <button class="edit-alliance text-yellow-600 px-0.5" data-id="${a.id}"><i class="fas fa-pen"></i></button>
-      <button class="del-alliance text-red-500 px-0.5" data-id="${a.id}"><i class="fas fa-trash"></i></button>
-    </div>
-  `).join('');
+
+  const stats = computeAllianceStats(workingAssignments);
+
+  list.innerHTML = workingAlliances.map((a, i) => {
+    const s = stats[a.id] || { bastions: 0, general: 0, trade: 0, total: 0 };
+    return `
+      <div class="flex items-center gap-1 py-1.5 border-b dark:border-gray-700 text-xs">
+        <span class="w-3 h-3 rounded-full flex-shrink-0" style="background:${a.color}"></span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-baseline gap-1">
+            <span class="text-gray-500">${i + 1}.</span>
+            <span class="font-mono font-semibold">${a.tag}</span>
+            <span class="text-gray-500 truncate">${a.name || ''}</span>
+          </div>
+          <div class="text-[10px] text-gray-500 dark:text-gray-400 flex flex-wrap gap-x-2">
+            <span><b class="text-gray-700 dark:text-gray-200">${s.total}</b> всего</span>
+            <span>Б:<b class="text-gray-700 dark:text-gray-200">${s.bastions}</b></span>
+            <span>Г:<b class="text-gray-700 dark:text-gray-200">${s.general}</b></span>
+            <span>Т:<b class="text-gray-700 dark:text-gray-200">${s.trade}</b></span>
+          </div>
+        </div>
+        <button class="rank-up text-blue-500 px-0.5 disabled:opacity-30" data-id="${a.id}" ${i === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
+        <button class="rank-down text-blue-500 px-0.5 disabled:opacity-30" data-id="${a.id}" ${i === workingAlliances.length - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>
+        <button class="edit-alliance text-yellow-600 px-0.5" data-id="${a.id}"><i class="fas fa-pen"></i></button>
+        <button class="del-alliance text-red-500 px-0.5" data-id="${a.id}"><i class="fas fa-trash"></i></button>
+      </div>`;
+  }).join('');
 
   list.querySelectorAll('.rank-up').forEach(b => b.addEventListener('click', () => moveRank(b.dataset.id, -1)));
   list.querySelectorAll('.rank-down').forEach(b => b.addEventListener('click', () => moveRank(b.dataset.id, 1)));
@@ -278,7 +331,8 @@ function moveRank(id, dir) {
 }
 
 function initAllianceModal() {
-  document.getElementById('btn-add-alliance').addEventListener('click', () => {
+  document.getElementById('btn-add-alliance').addEventListener('click', (e) => {
+    e.stopPropagation();
     document.getElementById('modal-alliance').classList.remove('hidden');
     document.getElementById('al-tag').value = '';
     document.getElementById('al-name').value = '';
@@ -367,6 +421,7 @@ function initMapDataControls() {
     clearSelection();
     hasUnsavedChanges = true;
     applyWorking();
+    renderAlliances();
     toast('Назначения очищены', 'success');
   });
 
