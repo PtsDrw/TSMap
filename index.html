@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tiles Survive — 217 штат</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="css/style.css">
+<script>tailwind.config = { darkMode: 'class' }</script>
+</head>
+<body class="bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100 transition-colors">
+
+<header class="flex justify-between items-center p-4 bg-white dark:bg-gray-800 shadow-md">
+  <button id="btn-admin" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+    <i class="fas fa-lock mr-2"></i>217 штат — управление
+  </button>
+  <button id="btn-theme" class="p-2 text-xl text-gray-600 dark:text-gray-300 hover:text-blue-500"><i class="fas fa-moon"></i></button>
+</header>
+
+<div class="text-center mt-6 mb-4">
+  <h1 class="text-3xl md:text-4xl font-bold">Tiles Survive</h1>
+  <p class="text-gray-500 dark:text-gray-400">217 штат — карта распределения территорий</p>
+</div>
+
+<div class="max-w-6xl mx-auto px-4">
+  <div class="flex justify-end mb-2 flex-wrap gap-2">
+    <button id="btn-toggle-labels" class="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded shadow text-sm hover:bg-gray-300 dark:hover:bg-gray-600"><i class="fas fa-font mr-1"></i> Подписи</button>
+    <button id="btn-download" class="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded shadow text-sm hover:bg-gray-300 dark:hover:bg-gray-600"><i class="fas fa-download mr-1"></i> Скачать PNG</button>
+  </div>
+  <div id="map-container" class="shadow-lg rounded-lg overflow-hidden" style="width:100%;height:65vh;"></div>
+</div>
+
+<div class="max-w-4xl mx-auto mt-8 px-4 mb-8">
+  <h2 class="text-xl font-semibold mb-4"><i class="fas fa-trophy text-yellow-500 mr-2"></i>Рейтинг союзов</h2>
+  <div id="alliances-list" class="space-y-2"></div>
+</div>
+
+<!-- Модалка авторизации -->
+<div id="modal-auth" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm">
+    <h3 class="text-xl font-bold mb-4">Вход</h3>
+    <div id="auth-step-1">
+      <label class="block text-sm mb-1">Ключ доступа</label>
+      <input type="text" id="access-key" placeholder="XXX-XXX" class="w-full border rounded p-2 mb-4 dark:bg-gray-700 dark:border-gray-600 uppercase">
+      <button id="btn-login-key" class="w-full bg-blue-600 text-white py-2 rounded mb-2 hover:bg-blue-700">Войти по ключу</button>
+      <button id="btn-admin-auth" class="w-full bg-gray-600 text-white py-2 rounded hover:bg-gray-700">Войти как администратор</button>
+    </div>
+    <div id="auth-step-2" class="hidden">
+      <label class="block text-sm mb-1">Логин</label>
+      <input type="email" id="admin-login" class="w-full border rounded p-2 mb-2 dark:bg-gray-700 dark:border-gray-600">
+      <label class="block text-sm mb-1">Пароль</label>
+      <input type="password" id="admin-pass" class="w-full border rounded p-2 mb-4 dark:bg-gray-700 dark:border-gray-600">
+      <button id="btn-do-admin-login" class="w-full bg-red-600 text-white py-2 rounded mb-2 hover:bg-red-700">Войти</button>
+      <button id="btn-back-auth" class="w-full text-sm text-gray-500 hover:underline">Назад</button>
+    </div>
+    <button id="btn-close-auth" class="mt-4 text-sm text-gray-500 hover:underline w-full">Отмена</button>
+  </div>
+</div>
+
+<!-- Модалка скачивания -->
+<div id="modal-download" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm text-center">
+    <h3 class="text-xl font-bold mb-4">Сохранить карту</h3>
+    <button id="btn-download-labels" class="w-full bg-blue-600 text-white py-2 rounded mb-2 hover:bg-blue-700">Сохранить с подписями</button>
+    <button id="btn-download-plain" class="w-full bg-gray-600 text-white py-2 rounded mb-2 hover:bg-gray-700">Сохранить без подписей</button>
+    <button id="btn-close-download" class="w-full text-sm text-gray-500 hover:underline mt-2">Отмена</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script type="module" src="js/visitor.js"></script>
+</body>
+</html>

@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Администратор — Tiles Survive</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="css/style.css">
+<script>tailwind.config = { darkMode: 'class' }</script>
+</head>
+<body class="bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-100 transition-colors">
+
+<header class="flex justify-between items-center p-3 bg-white dark:bg-gray-800 shadow-md sticky top-0 z-30">
+  <div class="flex items-center gap-2">
+    <span class="font-bold"><i class="fas fa-shield-alt text-red-500 mr-2"></i>Администратор</span>
+  </div>
+  <div class="flex items-center gap-2">
+    <button id="btn-theme" class="p-2 text-xl text-gray-600 dark:text-gray-300 hover:text-blue-500"><i class="fas fa-moon"></i></button>
+    <button id="btn-logout" class="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-sm"><i class="fas fa-sign-out-alt mr-1"></i>Выйти</button>
+  </div>
+</header>
+
+<!-- 
+  Desktop: lg:h-[calc(100vh-3.5rem)] + lg:overflow-hidden = фиксированная высота
+  Sidebar: lg:h-full + lg:overflow-y-auto = скролл внутри сайдбара
+  Mobile: карта sticky сверху, сайдбар скроллится под ней
+-->
+<main class="p-2 lg:p-4 lg:h-[calc(100vh-3.5rem)] lg:flex lg:gap-4 lg:overflow-hidden">
+
+  <!-- ============ КАРТА ============ -->
+  <div class="sticky top-[52px] z-20 bg-gray-100 dark:bg-gray-900 pb-2
+              lg:static lg:flex-1 lg:h-full lg:flex lg:flex-col lg:pb-0">
+    <div class="flex justify-end gap-2 mb-1">
+      <button id="btn-toggle-labels" class="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded text-sm"><i class="fas fa-font mr-1"></i>Подписи</button>
+      <button id="btn-download" class="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded text-sm"><i class="fas fa-download mr-1"></i>PNG</button>
+    </div>
+    <div id="map-container" class="h-[40vh] lg:h-auto lg:flex-1 rounded overflow-hidden border dark:border-gray-700"></div>
+  </div>
+
+  <!-- ============ САЙДБАР ============ -->
+  <aside class="lg:w-[420px] lg:h-full lg:overflow-y-auto lg:pr-1 space-y-3 mt-2 lg:mt-0">
+
+    <!-- === КЛЮЧИ === -->
+    <details class="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden" open>
+      <summary class="p-3 cursor-pointer font-semibold flex items-center justify-between">
+        <span><i class="fas fa-key mr-2 text-yellow-500"></i>Ключи доступа</span>
+        <button id="btn-create-key" class="px-2 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700" onclick="event.stopPropagation()">
+          <i class="fas fa-plus"></i>
+        </button>
+      </summary>
+      <div id="keys-list" class="px-3 pb-3"></div>
+    </details>
+
+    <!-- === СОЮЗЫ === -->
+    <details class="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden" open>
+      <summary class="p-3 cursor-pointer font-semibold flex items-center justify-between">
+        <span><i class="fas fa-users mr-2 text-green-500"></i>Союзы</span>
+        <button id="btn-add-alliance" class="px-2 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700" onclick="event.stopPropagation()">
+          <i class="fas fa-plus"></i>
+        </button>
+      </summary>
+      <div class="px-3 pb-3">
+        <div id="alliances-ranking"></div>
+      </div>
+    </details>
+
+    <!-- === ТЕРРИТОРИИ === -->
+    <details class="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden" open>
+      <summary class="p-3 cursor-pointer font-semibold">
+        <i class="fas fa-map-marker-alt mr-2 text-blue-500"></i>Территории
+      </summary>
+      <div class="px-3 pb-3 space-y-2">
+        <div class="text-xs font-semibold mb-1">Режим:</div>
+        <div class="flex flex-wrap gap-3 text-xs">
+          <label class="flex items-center"><input type="radio" name="edit-mode" value="territory-to-alliance" checked class="mr-1">Территории → Союз</label>
+          <label class="flex items-center"><input type="radio" name="edit-mode" value="alliance-to-territory" class="mr-1">Союз → Территории</label>
+        </div>
+
+        <div class="pt-2">
+          <label class="block text-xs font-semibold mb-1">Активный союз:</label>
+          <div class="flex gap-1">
+            <select id="alliance-select" class="flex-1 border rounded p-1.5 dark:bg-gray-700 dark:border-gray-600 text-xs"></select>
+            <button id="btn-apply-alliance" class="px-2 py-1.5 bg-blue-600 text-white rounded text-xs whitespace-nowrap hover:bg-blue-700">
+              <i class="fas fa-check"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-1 pt-2">
+          <button id="btn-select-all" class="px-2 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700"><i class="fas fa-check-square mr-1"></i>Выбрать все</button>
+          <button id="btn-clear-selection" class="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700"><i class="fas fa-square mr-1"></i>Сбросить</button>
+        </div>
+
+        <div class="pt-1">
+          <button id="btn-clear-territories" class="w-full px-2 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700"><i class="fas fa-trash mr-1"></i>Очистить все назначения</button>
+        </div>
+      </div>
+    </details>
+
+    <!-- === ПОДПИСИ === -->
+    <details class="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden" open>
+      <summary class="p-3 cursor-pointer font-semibold">
+        <i class="fas fa-font mr-2 text-purple-500"></i>Подписи
+      </summary>
+      <div class="px-3 pb-3 space-y-3">
+
+        <div class="border dark:border-gray-700 rounded p-2">
+          <label class="block text-xs font-semibold mb-1"><i class="fas fa-globe mr-1 text-blue-500"></i>Глобальный масштаб</label>
+          <input type="range" id="lbl-global-scale" min="0.3" max="3" step="0.1" value="1" class="w-full">
+        </div>
+
+        <p class="text-xs text-gray-500">Выберите территории на карте для индивидуальной настройки.</p>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="text-xs">Смещение X</label><input type="range" id="lbl-dx" min="-30" max="30" step="1" value="0" class="w-full"></div>
+          <div><label class="text-xs">Смещение Y</label><input type="range" id="lbl-dy" min="-30" max="30" step="1" value="0" class="w-full"></div>
+          <div><label class="text-xs">Поворот (°)</label><input type="range" id="lbl-rot" min="-180" max="180" step="5" value="0" class="w-full"></div>
+          <div><label class="text-xs">Масштаб</label><input type="range" id="lbl-scale" min="0.3" max="3" step="0.1" value="1" class="w-full"></div>
+        </div>
+
+        <div class="space-y-1">
+          <button id="btn-reset-selected" class="w-full px-2 py-1 bg-yellow-600 text-white rounded text-xs"><i class="fas fa-undo mr-1"></i>Сбросить у выбранных</button>
+          <button id="btn-reset-all" class="w-full px-2 py-1 bg-orange-600 text-white rounded text-xs"><i class="fas fa-undo-alt mr-1"></i>Сбросить у всех</button>
+          <button id="btn-save-labels" class="w-full px-2 py-2 bg-purple-600 text-white rounded text-xs font-semibold"><i class="fas fa-save mr-1"></i>Сохранить подписи</button>
+        </div>
+      </div>
+    </details>
+
+    <!-- === СОХРАНИТЬ КАРТУ (союзы + территории) === -->
+    <button id="btn-save-map" class="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg shadow font-bold">
+      <i class="fas fa-save mr-2"></i>Сохранить карту
+    </button>
+    <p class="text-xs text-gray-500 text-center pb-3">Сохраняет союзы и назначения территорий</p>
+  </aside>
+</main>
+
+<!-- ============ МОДАЛКИ ============ -->
+
+<!-- Создание ключа -->
+<div id="modal-key" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+    <h3 class="text-xl font-bold mb-4">Новый ключ доступа</h3>
+    <label class="block text-sm mb-1">Кому выдан</label>
+    <input type="text" id="key-name" placeholder="Имя" class="w-full border rounded p-2 mb-3 dark:bg-gray-700 dark:border-gray-600">
+    <label class="block text-sm mb-1">Ключ</label>
+    <div class="flex gap-2 mb-3">
+      <input type="text" id="key-gen" readonly class="w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600 font-mono text-center">
+      <button id="btn-regen-key" class="px-3 bg-gray-600 text-white rounded hover:bg-gray-700" title="Сгенерировать заново"><i class="fas fa-sync"></i></button>
+    </div>
+    <label class="flex items-center text-sm mb-4">
+      <input type="checkbox" id="key-main" class="mr-2"> Главный управляющий
+    </label>
+    <button id="btn-save-key" class="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700 mb-2">Сохранить</button>
+    <button id="btn-close-key" class="w-full text-sm text-gray-500 hover:underline">Отмена</button>
+  </div>
+</div>
+
+<!-- Добавление союза -->
+<div id="modal-alliance" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+    <h3 class="text-xl font-bold mb-4">Новый союз</h3>
+    <label class="block text-sm mb-1">Клан-тег (3 символа)</label>
+    <input type="text" id="al-tag" maxlength="3" class="w-full border rounded p-2 mb-3 dark:bg-gray-700 dark:border-gray-600 uppercase font-mono">
+    <label class="block text-sm mb-1">Название (необязательно)</label>
+    <input type="text" id="al-name" class="w-full border rounded p-2 mb-3 dark:bg-gray-700 dark:border-gray-600">
+    <label class="block text-sm mb-1">Цвет</label>
+    <input type="color" id="al-color" class="w-full h-10 mb-4">
+    <button id="btn-save-alliance" class="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700 mb-2">Сохранить</button>
+    <button id="btn-close-alliance" class="w-full text-sm text-gray-500 hover:underline">Отмена</button>
+  </div>
+</div>
+
+<!-- Скачивание -->
+<div id="modal-download" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-sm text-center">
+    <h3 class="text-xl font-bold mb-4">Сохранить карту</h3>
+    <button id="btn-download-labels" class="w-full bg-blue-600 text-white py-2 rounded mb-2 hover:bg-blue-700">С подписями</button>
+    <button id="btn-download-plain" class="w-full bg-gray-600 text-white py-2 rounded mb-2 hover:bg-gray-700">Без подписей</button>
+    <button id="btn-close-download" class="w-full text-sm text-gray-500 hover:underline mt-2">Отмена</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script type="module" src="js/admin.js"></script>
+</body>
+</html>
