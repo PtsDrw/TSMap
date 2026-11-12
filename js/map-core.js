@@ -11,12 +11,15 @@ let territoryAssignments = {};
 let onTerritoryClick = null;
 let selectedTerritories = new Set();
 let hideUnassignedLabels = false;
+let showUnassignedIcons = false;
 
 const FALLBACK_VIEWBOX = [-10, -10, 550, 542];
 const LABELS_STATE_KEY = 'ts_labels_visible';
+const UNASSIGNED_ICONS_KEY = 'ts_unassigned_icons';
 const TRADE_STROKE_LIGHT = '#f59e0b';
 const TRADE_STROKE_DARK = '#fbbf24';
 const TRADE_STROKE_WIDTH = '2.5';
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const TERRITORY_TYPES = {
   D: { label: 'Деревни', subs: false },
@@ -28,6 +31,173 @@ const TERRITORY_TYPES = {
   B: { label: 'Бастионы', subs: true, levels: [1,2,3,4,5,6] },
   T: { label: 'Торговые посты', subs: true, levels: [1,2,3,4,5] }
 };
+
+const LEVEL_BY_TYPE = { D: 1, Z: 2, G: 3, M: 4, C: 5, V: 6 };
+
+const ICON_SIZE = 10;
+const ICON_HALF = ICON_SIZE / 2;
+const ICON_GAP = 2;
+
+function createIconShape(kind) {
+  let fill, stroke, points;
+  if (kind === 'bastion') {
+    fill = '#7c3aed'; stroke = '#1e1b4b';
+    points = `${ICON_HALF},0 ${ICON_SIZE},0 ${ICON_SIZE},${ICON_HALF + 3} ${ICON_HALF},${ICON_SIZE} 0,${ICON_HALF + 3} 0,0`;
+  } else if (kind === 'trade') {
+    fill = '#f59e0b'; stroke = '#7c2d12';
+    points = `${ICON_HALF},0 ${ICON_SIZE},${ICON_HALF} ${ICON_HALF},${ICON_SIZE} 0,${ICON_HALF}`;
+  } else {
+    fill = '#3b82f6'; stroke = '#1e3a8a';
+    points = `0,${ICON_HALF - 1} ${ICON_HALF},0 ${ICON_SIZE},${ICON_HALF - 1} ${ICON_SIZE},${ICON_SIZE} 0,${ICON_SIZE}`;
+  }
+  const shape = document.createElementNS(SVG_NS, 'polygon');
+  shape.setAttribute('points', points);
+  shape.setAttribute('fill', fill);
+  shape.setAttribute('stroke', stroke);
+  shape.setAttribute('stroke-width', '0.6');
+  shape.setAttribute('stroke-linejoin', 'round');
+  return shape;
+}
+
+function getIconTextColor(kind) {
+  if (kind === 'trade') return '#7c2d12';
+  return '#ffffff';
+}
+
+function createIconNumber(level, textColor = '#ffffff') {
+  const t = document.createElementNS(SVG_NS, 'text');
+  t.setAttribute('x', String(ICON_HALF));
+  t.setAttribute('y', String(ICON_HALF + 0.5));
+  t.setAttribute('text-anchor', 'middle');
+  t.setAttribute('dominant-baseline', 'central');
+  t.setAttribute('font-family', 'Arial, sans-serif');
+  t.setAttribute('font-size', '6.5');
+  t.setAttribute('font-weight', 'bold');
+  t.setAttribute('fill', textColor);
+  t.textContent = String(level);
+  return t;
+}
+
+function getLabelStyleColors() {
+  const isDark = document.documentElement.classList.contains('dark');
+  return { fill: isDark ? '#ffffff' : '#000000', stroke: isDark ? '#000000' : '#ffffff' };
+}
+
+const textMeasureCanvas = document.createElement('canvas');
+const textMeasureCtx = textMeasureCanvas.getContext('2d');
+
+function measureTextWidth(text, fontSize = 9, fontWeight = 'bold') {
+  textMeasureCtx.font = `${fontWeight} ${fontSize}px Arial, sans-serif`;
+  return textMeasureCtx.measureText(text).width;
+}
+
+function parsePoints(str) {
+  if (!str) return [];
+  const arr = str.trim().split(/[\s,]+/).map(Number);
+  const out = [];
+  for (let i = 0; i + 1 < arr.length; i += 2) out.push([arr[i], arr[i + 1]]);
+  return out;
+}
+
+function isPointInPolygon(x, y, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i][0], yi = pts[i][1];
+    const xj = pts[j][0], yj = pts[j][1];
+    const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function doesTextFit(id, tag, ox, oy, cfg) {
+  if (!tag) return false;
+  const dx = cfg.dx || 0, dy = cfg.dy || 0;
+  const rot = cfg.rotation || 0, scale = cfg.scale || 1;
+  const tagWidth = measureTextWidth(tag);
+  const totalWidthWithTag = ICON_SIZE + ICON_GAP + tagWidth;
+  const totalHeight = Math.max(ICON_SIZE, 9);
+  const localW = totalWidthWithTag;
+  const localH = totalHeight;
+  const startX = -localW / 2;
+  const corners = [
+    { x: startX, y: -localH / 2 }, { x: startX + localW, y: -localH / 2 },
+    { x: startX + localW, y: localH / 2 }, { x: startX, y: localH / 2 }
+  ];
+  const rad = rot * Math.PI / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const finalCorners = corners.map(c => ({
+    x: ox + dx + scale * (c.x * cos - c.y * sin),
+    y: oy + dy + scale * (c.x * sin + c.y * cos)
+  }));
+  const el = svgRoot.getElementById(id);
+  if (!el) return true;
+  const polyPts = parsePoints(el.getAttribute('points'));
+  if (polyPts.length === 0) return true;
+  for (const pt of finalCorners) {
+    if (!isPointInPolygon(pt.x, pt.y, polyPts)) return false;
+  }
+  return true;
+}
+
+function buildLabelsLayer() {
+  if (!svgRoot) return;
+  const labelsLayer = svgRoot.getElementById('labels');
+  if (!labelsLayer) return;
+  labelsLayer.querySelectorAll('.label-group').forEach(el => el.remove());
+  labelsLayer.querySelectorAll('.label').forEach(txt => { txt.style.display = 'none'; });
+  const allIds = getAllTerritoryIds();
+  allIds.forEach(id => {
+    const allianceId = territoryAssignments[id];
+    const info = getTerritoryLevelLabel(id);
+    if (!info) return;
+    const alliance = allianceId ? allianceMap[allianceId] : null;
+    if (!alliance && !showUnassignedIcons) return;
+    const cfg = labelSettings[id] || {};
+    const dx = cfg.dx || 0, dy = cfg.dy || 0;
+    const rot = cfg.rotation || 0, scale = cfg.scale || 1;
+    const srcTxt = labelsLayer.querySelector(`.label[data-id="${id}"]`);
+    if (!srcTxt) return;
+    const ox = parseFloat(srcTxt.getAttribute('x')) || 0;
+    const oy = parseFloat(srcTxt.getAttribute('y')) || 0;
+    const tag = alliance ? alliance.tag : '';
+    const fits = doesTextFit(id, tag, ox, oy, cfg);
+    const showTag = !!tag && fits;
+    const tagWidth = tag ? measureTextWidth(tag) : 0;
+    const finalWidth = showTag ? (ICON_SIZE + ICON_GAP + tagWidth) : ICON_SIZE;
+    const startX = -finalWidth / 2;
+    const group = document.createElementNS(SVG_NS, 'g');
+    group.setAttribute('class', 'label-group');
+    group.setAttribute('data-id', id);
+    group.setAttribute('pointer-events', 'none');
+    group.setAttribute('transform', `translate(${ox + dx} ${oy + dy}) rotate(${rot}) scale(${scale})`);
+    const iconG = document.createElementNS(SVG_NS, 'g');
+    iconG.setAttribute('transform', `translate(${startX} -${ICON_HALF})`);
+    iconG.appendChild(createIconShape(info.kind));
+    iconG.appendChild(createIconNumber(info.level, getIconTextColor(info.kind)));
+    group.appendChild(iconG);
+    if (showTag) {
+      const colors = getLabelStyleColors();
+      const txt = document.createElementNS(SVG_NS, 'text');
+      txt.setAttribute('x', String(startX + ICON_SIZE + ICON_GAP));
+      txt.setAttribute('y', '0');
+      txt.setAttribute('text-anchor', 'start');
+      txt.setAttribute('dominant-baseline', 'central');
+      txt.setAttribute('font-family', 'Arial, sans-serif');
+      txt.setAttribute('font-size', '9');
+      txt.setAttribute('font-weight', 'bold');
+      txt.setAttribute('fill', cfg.fill || colors.fill);
+      txt.setAttribute('stroke', colors.stroke);
+      txt.setAttribute('stroke-width', '1');
+      txt.setAttribute('stroke-linejoin', 'round');
+      txt.setAttribute('paint-order', 'stroke');
+      txt.textContent = tag;
+      group.appendChild(txt);
+    }
+    labelsLayer.appendChild(group);
+  });
+}
 
 export function getTerritoryType(id) {
   const m = String(id || '').match(/^([A-Z])/);
@@ -41,6 +211,16 @@ export function getTerritoryLevel(id) {
   const parts = s.split('-');
   return (parts.length >= 2 && /^\d+$/.test(parts[1])) ? parseInt(parts[1]) : null;
 }
+
+export function getTerritoryLevelLabel(id) {
+  const type = getTerritoryType(id);
+  if (type === 'B') return { prefix: 'B', level: getTerritoryLevel(id), kind: 'bastion' };
+  if (type === 'T') return { prefix: 'T', level: getTerritoryLevel(id), kind: 'trade' };
+  if (type === 'A') return null;
+  const lvl = LEVEL_BY_TYPE[type] || 0;
+  return lvl ? { prefix: 'G', level: lvl, kind: 'city' } : null;
+}
+
 function safeParseViewBox(str) {
   if (typeof str !== 'string' || !str) return null;
   try {
@@ -48,6 +228,64 @@ function safeParseViewBox(str) {
     if (parts.length !== 4 || parts[2] <= 0 || parts[3] <= 0) return null;
     return parts;
   } catch { return null; }
+}
+
+function pointOnSegment(px, py, x1, y1, x2, y2, eps = 1.5) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.abs(px - x1) < eps && Math.abs(py - y1) < eps;
+  let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const nx = x1 + t * dx;
+  const ny = y1 + t * dy;
+  return Math.sqrt((px - nx) ** 2 + (py - ny) ** 2) < eps;
+}
+
+function isAdjacent(pts1, pts2, eps = 1.5) {
+  for (const [x1, y1] of pts1) {
+    for (const [x2, y2] of pts2) {
+      if (Math.abs(x1 - x2) < eps && Math.abs(y1 - y2) < eps) return true;
+    }
+  }
+  for (let i = 0; i < pts1.length; i++) {
+    const [px, py] = pts1[i];
+    for (let j = 0; j < pts2.length; j++) {
+      const [x1, y1] = pts2[j];
+      const [x2, y2] = pts2[(j + 1) % pts2.length];
+      if (pointOnSegment(px, py, x1, y1, x2, y2, eps)) return true;
+    }
+  }
+  for (let i = 0; i < pts2.length; i++) {
+    const [px, py] = pts2[i];
+    for (let j = 0; j < pts1.length; j++) {
+      const [x1, y1] = pts1[j];
+      const [x2, y2] = pts1[(j + 1) % pts1.length];
+      if (pointOnSegment(px, py, x1, y1, x2, y2, eps)) return true;
+    }
+  }
+  return false;
+}
+
+export function getNeighbors(id) {
+  if (!svgRoot) return new Set();
+  const el = svgRoot.getElementById(id);
+  if (!el) return new Set();
+  const pts = parsePoints(el.getAttribute('points'));
+  const neighbors = new Set();
+  svgRoot.querySelectorAll('.territory').forEach(other => {
+    if (other.id === id || other.id === 'A') return;
+    const otherPts = parsePoints(other.getAttribute('points'));
+    if (isAdjacent(pts, otherPts)) neighbors.add(other.id);
+  });
+  return neighbors;
+}
+
+export function canSelectWithAdjacency(territoryId, selectedIds, adjacencyMode) {
+  if (!adjacencyMode) return true;
+  if (!selectedIds.length) return true;
+  const neighbors = getNeighbors(territoryId);
+  return selectedIds.some(sid => neighbors.has(sid));
 }
 
 function addTradeLegend(container) {
@@ -58,15 +296,14 @@ function addTradeLegend(container) {
   container.appendChild(el);
 }
 
-function addMapControls(container, pz, interactive, handleTerritoryClick) {
+function addMapControls(container, pz, interactive, handleTerritoryClick, onFullscreenEditToggle) {
   const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-
   let editMode = interactive && !isTouch;
   let panEnabled = isTouch ? true : !interactive;
   let isFullscreen = false;
+  let fullscreenEditPanel = false;
   let savedEdit = editMode;
   let savedPan = panEnabled;
-
   const controls = document.createElement('div');
   controls.className = 'map-controls';
   container.style.position = 'relative';
@@ -81,16 +318,16 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
         <i class="fas fa-${isFullscreen ? 'compress' : 'expand'}"></i>
       </button>
     `;
-    if (interactive && !isFullscreen) {
-      const editTitle = editMode
-        ? 'Редактирование включено (клик по территориям)'
-        : 'Редактирование выключено';
-      html += `<button data-action="toggleEdit" class="${editMode ? 'active' : ''}" title="${editTitle}"><i class="fas fa-pen"></i></button>`;
+    if (interactive) {
+      if (isFullscreen) {
+        html += `<button data-action="toggleFullscreenEdit" class="${fullscreenEditPanel ? 'active' : ''}" title="${fullscreenEditPanel ? 'Скрыть инструменты' : 'Инструменты редактирования'}"><i class="fas fa-tools"></i></button>`;
+      } else {
+        const editTitle = editMode ? 'Редактирование включено' : 'Редактирование выключено';
+        html += `<button data-action="toggleEdit" class="${editMode ? 'active' : ''}" title="${editTitle}"><i class="fas fa-pen"></i></button>`;
+      }
     }
     if (!isFullscreen) {
-      const panTitle = panEnabled
-        ? 'Перемещение включено (1 палец двигает карту)'
-        : 'Перемещение выключено (1 палец прокручивает страницу)';
+      const panTitle = panEnabled ? 'Перемещение включено' : 'Перемещение выключено';
       html += `<button data-action="togglePan" class="${panEnabled ? 'active' : ''}" title="${panTitle}"><i class="fas fa-arrows-alt"></i></button>`;
     }
     controls.innerHTML = html;
@@ -103,24 +340,14 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
       svg.style.touchAction = 'none';
       svg.querySelectorAll('*').forEach(el => { el.style.touchAction = 'none'; });
     }
-    if (panEnabled) {
-      pz.enablePan();
-    } else {
-      pz.disablePan();
-      pz.enableZoom();
-      if (typeof pz.enableTouchZoom === 'function') pz.enableTouchZoom();
-    }
+    if (panEnabled) { pz.enablePan(); } else { pz.disablePan(); pz.enableZoom(); if (typeof pz.enableTouchZoom === 'function') pz.enableTouchZoom(); }
   };
 
   render();
   applyInteraction();
 
-  let tapData = null;
-  let scrollTouchY = null;
-  let scrollMoved = false;
-  const TAP_THRESHOLD = 10;
-  const SCROLL_THRESHOLD = 5;
-  const TAP_TIME_LIMIT = 600;
+  let tapData = null, scrollTouchY = null, scrollMoved = false;
+  const TAP_THRESHOLD = 10, SCROLL_THRESHOLD = 5, TAP_TIME_LIMIT = 600;
 
   const onTouchStart = (e) => {
     if (e.touches.length !== 1) { tapData = null; return; }
@@ -130,32 +357,22 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
   };
 
   const onTouchMove = (e) => {
-    if (e.touches.length >= 2) {
-      if (e.cancelable) e.preventDefault();
-      return;
-    }
+    // ⭐ Игнорируем мультитач (2+ пальца) — пусть svg-pan-zoom сам обрабатывает pinch
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
-
     if (tapData && !tapData.moved) {
       const dx = Math.abs(t.clientX - tapData.x);
       const dy = Math.abs(t.clientY - tapData.y);
       if (dx > TAP_THRESHOLD || dy > TAP_THRESHOLD) tapData.moved = true;
     }
-
     if (!panEnabled && scrollTouchY !== null) {
       const dy = scrollTouchY - t.clientY;
-      if (Math.abs(dy) > SCROLL_THRESHOLD) {
-        scrollMoved = true;
-        window.scrollBy(0, dy);
-        scrollTouchY = t.clientY;
-      }
+      if (Math.abs(dy) > SCROLL_THRESHOLD) { scrollMoved = true; window.scrollBy(0, dy); scrollTouchY = t.clientY; }
     }
   };
 
   const onTouchEnd = (e) => {
     let handled = false;
-
     if (tapData && !tapData.moved && !scrollMoved) {
       const dt = Date.now() - tapData.time;
       if (dt < TAP_TIME_LIMIT) {
@@ -166,83 +383,50 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
           const territory = el && el.closest ? el.closest('.territory') : null;
           if (territory && interactive && !isFullscreen && editMode) {
             handled = true;
-            try {
-              handleTerritoryClick(territory.id, territory);
-            } catch (err) { console.error('tap error:', err); }
+            try { handleTerritoryClick(territory.id, territory); } catch (err) { console.error(err); }
           }
         }
       }
     }
-
     if (handled || scrollMoved || (tapData && tapData.moved)) {
       container._suppressClick = true;
       setTimeout(() => { container._suppressClick = false; }, 250);
     }
-
-    tapData = null;
-    scrollTouchY = null;
-    scrollMoved = false;
+    tapData = null; scrollTouchY = null; scrollMoved = false;
   };
 
-  const onTouchCancel = () => {
-    tapData = null;
-    scrollTouchY = null;
-    scrollMoved = false;
-  };
-
+  const onTouchCancel = () => { tapData = null; scrollTouchY = null; scrollMoved = false; };
   container.addEventListener('touchstart', onTouchStart, { passive: true });
   container.addEventListener('touchmove', onTouchMove, { passive: false });
   container.addEventListener('touchend', onTouchEnd, { passive: true });
   container.addEventListener('touchcancel', onTouchCancel, { passive: true });
 
   const enterFullscreen = async () => {
-    savedEdit = editMode;
-    savedPan = panEnabled;
-    editMode = false;
-    panEnabled = true;
-    isFullscreen = true;
-    render();
-    applyInteraction();
-    container.classList.add('is-fullscreen');
+    savedEdit = editMode; savedPan = panEnabled; editMode = false; panEnabled = true; isFullscreen = true; fullscreenEditPanel = false;
+    render(); applyInteraction(); container.classList.add('is-fullscreen');
     try {
       if (container.requestFullscreen) await container.requestFullscreen();
       else if (container.webkitRequestFullscreen) await container.webkitRequestFullscreen();
       else if (container.msRequestFullscreen) await container.msRequestFullscreen();
-      else {
-        container.classList.add('fullscreen-fallback');
-        document.body.classList.add('no-scroll');
-      }
-    } catch (e) { console.warn('fullscreen error:', e); }
+      else { container.classList.add('fullscreen-fallback'); document.body.classList.add('no-scroll'); }
+    } catch (e) {}
     setTimeout(() => { pz.resize(); pz.fit(); pz.center(); }, 200);
   };
 
   const exitFullscreen = async () => {
-    isFullscreen = false;
-    container.classList.remove('is-fullscreen', 'fullscreen-fallback');
-    document.body.classList.remove('no-scroll');
-    editMode = savedEdit;
-    panEnabled = savedPan;
-    render();
-    applyInteraction();
+    isFullscreen = false; fullscreenEditPanel = false; container.classList.remove('is-fullscreen', 'fullscreen-fallback'); document.body.classList.remove('no-scroll');
+    editMode = savedEdit; panEnabled = savedPan; render(); applyInteraction();
+    if (onFullscreenEditToggle) onFullscreenEditToggle(false);
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
       else if (document.webkitFullscreenElement) await document.webkitExitFullscreen();
-    } catch (e) { console.warn('exit fullscreen error:', e); }
+    } catch (e) {}
     setTimeout(() => { pz.resize(); pz.fit(); pz.center(); }, 200);
   };
 
   const onFsChange = () => {
     const active = !!(document.fullscreenElement || document.webkitFullscreenElement);
-    if (!active && isFullscreen) {
-      isFullscreen = false;
-      container.classList.remove('is-fullscreen', 'fullscreen-fallback');
-      document.body.classList.remove('no-scroll');
-      editMode = savedEdit;
-      panEnabled = savedPan;
-      render();
-      applyInteraction();
-      setTimeout(() => { pz.resize(); pz.fit(); pz.center(); }, 200);
-    }
+    if (!active && isFullscreen) exitFullscreen();
   };
   document.addEventListener('fullscreenchange', onFsChange);
   document.addEventListener('webkitfullscreenchange', onFsChange);
@@ -251,117 +435,93 @@ function addMapControls(container, pz, interactive, handleTerritoryClick) {
     const btn = e.target.closest('button');
     if (!btn) return;
     const action = btn.dataset.action;
-
     if (action === 'zoomIn') pz.zoomIn();
     else if (action === 'zoomOut') pz.zoomOut();
     else if (action === 'reset') { pz.resize(); pz.fit(); pz.center(); }
-    else if (action === 'toggleEdit') {
-      if (isFullscreen) return;
-      editMode = !editMode;
+    else if (action === 'toggleEdit') { if (isFullscreen) return; editMode = !editMode; render(); }
+    else if (action === 'toggleFullscreenEdit') {
+      if (!isFullscreen) return;
+      fullscreenEditPanel = !fullscreenEditPanel;
+      editMode = fullscreenEditPanel;
       render();
+      if (onFullscreenEditToggle) onFullscreenEditToggle(fullscreenEditPanel);
     }
-    else if (action === 'togglePan') {
-      if (isFullscreen) return;
-      panEnabled = !panEnabled;
-      render();
-      applyInteraction();
-    }
-    else if (action === 'fullscreen') {
-      if (isFullscreen) await exitFullscreen();
-      else await enterFullscreen();
-    }
+    else if (action === 'togglePan') { if (isFullscreen) return; panEnabled = !panEnabled; render(); applyInteraction(); }
+    else if (action === 'fullscreen') { if (isFullscreen) await exitFullscreen(); else await enterFullscreen(); }
   });
-
   container._getEditMode = () => editMode;
 }
 
-export async function initMap({ containerId, interactive = false, clickHandler = null }) {
+export async function initMap({ containerId, interactive = false, clickHandler = null, onFullscreenEditToggle = null }) {
   const container = document.getElementById(containerId);
-
   try {
     const res = await fetch('assets/map.svg');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     originalSvgText = await res.text();
     container.innerHTML = originalSvgText;
   } catch (e) {
-    console.error('Map load error:', e);
-    container.innerHTML = `
-      <div class="p-6 text-center text-red-500">
-        <p class="font-bold text-lg mb-2"><i class="fas fa-exclamation-triangle mr-2"></i>Карта не загружена</p>
-        <p class="text-sm">Ошибка: ${e.message}</p>
-      </div>`;
+    container.innerHTML = `<div class="p-6 text-center text-red-500"><p class="font-bold">Ошибка карты: ${e.message}</p></div>`;
     return null;
   }
-
   svgRoot = container.querySelector('svg');
   if (!svgRoot) return null;
-
   originalSvgViewBox = safeParseViewBox(svgRoot.getAttribute('viewBox')) || [...FALLBACK_VIEWBOX];
-  svgRoot.removeAttribute('width');
-  svgRoot.removeAttribute('height');
-
+  svgRoot.removeAttribute('width'); svgRoot.removeAttribute('height');
   addTradeLegend(container);
 
   const handleTerritoryClick = (id, el) => {
     if (container._suppressClick) return;
     if (!interactive) return;
-    if (container.classList.contains('is-fullscreen')) return;
-    if (container._getEditMode && !container._getEditMode()) return;
-    if (clickHandler) clickHandler(id, el);
-    else toggleSelection(el);
+    if (container.classList.contains('is-fullscreen') && !container._getEditMode()) return;
+    if (!container._getEditMode()) return;
+    if (clickHandler) clickHandler(id, el); else toggleSelection(el);
   };
-
   onTerritoryClick = clickHandler;
 
   if (typeof svgPanZoom === 'function') {
     try {
-      panZoom = svgPanZoom(svgRoot, {
-        zoomEnabled: true, controlIconsEnabled: false,
-        fit: true, center: true,
-        minZoom: 0.4, maxZoom: 12,
-        zoomScaleSensitivity: 0.4,
-        preventClickEventEnabled: false
+      panZoom = svgPanZoom(svgRoot, { 
+        zoomEnabled: true, 
+        controlIconsEnabled: false, 
+        fit: true, 
+        center: true, 
+        minZoom: 0.4, 
+        maxZoom: 12, 
+        zoomScaleSensitivity: 0.4, 
+        preventClickEventEnabled: false,
+        touchZoomEnabled: true // ⭐ Явно включаем зум двумя пальцами
       });
-
+      
       panZoom.enableZoom();
       if (typeof panZoom.enableTouchZoom === 'function') panZoom.enableTouchZoom();
 
-      const doFit = () => {
-        try { panZoom.resize(); panZoom.fit(); panZoom.center(); } catch (e) { console.warn('fit failed:', e); }
-      };
-      doFit();
-      requestAnimationFrame(doFit);
-      setTimeout(doFit, 150);
-      setTimeout(doFit, 500);
+      // ⭐ Принудительно разрешаем pinch-zoom на мобильных (фикс для Safari/Chrome)
+      svgRoot.addEventListener('touchstart', (e) => {
+        if (e.touches.length > 1 && e.cancelable) e.preventDefault();
+      }, { passive: false });
+      svgRoot.addEventListener('touchmove', (e) => {
+        if (e.touches.length > 1 && e.cancelable) e.preventDefault();
+      }, { passive: false });
 
+      const doFit = () => { try { panZoom.resize(); panZoom.fit(); panZoom.center(); } catch (e) {} };
+      doFit(); requestAnimationFrame(doFit); setTimeout(doFit, 150); setTimeout(doFit, 500);
       try {
         let lastW = 0, lastH = 0;
-        const ro = new ResizeObserver(() => {
-          const w = container.clientWidth;
-          const h = container.clientHeight;
-          if (w > 0 && h > 0 && (w !== lastW || h !== lastH)) {
-            lastW = w; lastH = h;
-            doFit();
-          }
-        });
-        ro.observe(container);
-      } catch (e) { console.warn('ResizeObserver failed:', e); }
-
-      addMapControls(container, panZoom, interactive, handleTerritoryClick);
-    } catch (e) {
-      console.error('panZoom init failed:', e);
-    }
+        new ResizeObserver(() => {
+          const w = container.clientWidth, h = container.clientHeight;
+          if (w > 0 && h > 0 && (w !== lastW || h !== lastH)) { lastW = w; lastH = h; doFit(); }
+        }).observe(container);
+      } catch (e) {}
+      addMapControls(container, panZoom, interactive, handleTerritoryClick, onFullscreenEditToggle);
+    } catch (e) {}
   }
 
   await loadAllData();
-
   svgRoot.querySelectorAll('.territory').forEach(t => {
-    t.addEventListener('click', (e) => {
-      e.stopPropagation();
-      handleTerritoryClick(t.id, t);
-    });
+    t.addEventListener('click', (e) => { e.stopPropagation(); handleTerritoryClick(t.id, t); });
   });
 
+  new MutationObserver(() => { buildLabelsLayer(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
   applyAll();
   return { panZoom, svgRoot };
 }
@@ -371,38 +531,41 @@ export function setupLabelsToggle(buttonId) {
   if (!btn) return;
   let visible = localStorage.getItem(LABELS_STATE_KEY) !== 'false';
   const updateBtn = () => {
-    if (visible) {
-      btn.innerHTML = '<i class="fas fa-eye mr-1"></i>Подписи вкл';
-      btn.classList.remove('bg-gray-200', 'dark:bg-gray-700', 'bg-gray-600');
-      btn.classList.add('bg-green-600', 'text-white');
-    } else {
-      btn.innerHTML = '<i class="fas fa-eye-slash mr-1"></i>Подписи выкл';
-      btn.classList.remove('bg-green-600', 'text-white', 'bg-gray-600');
-      btn.classList.add('bg-gray-200', 'dark:bg-gray-700');
-    }
+    if (visible) { btn.innerHTML = '<i class="fas fa-eye mr-1"></i>Подписи вкл'; btn.classList.add('bg-green-600', 'text-white'); btn.classList.remove('bg-gray-200', 'dark:bg-gray-700'); }
+    else { btn.innerHTML = '<i class="fas fa-eye-slash mr-1"></i>Подписи выкл'; btn.classList.remove('bg-green-600', 'text-white'); btn.classList.add('bg-gray-200', 'dark:bg-gray-700'); }
     toggleLabels(visible);
   };
   updateBtn();
-  btn.addEventListener('click', () => {
-    visible = !visible;
-    localStorage.setItem(LABELS_STATE_KEY, String(visible));
-    updateBtn();
+  btn.addEventListener('click', () => { 
+    visible = !visible; localStorage.setItem(LABELS_STATE_KEY, String(visible)); 
+    updateBtn(); 
+    if (typeof window.updateFsVisualToggles === 'function') window.updateFsVisualToggles();
   });
 }
 
-export function setHideUnassignedLabels(v) {
-  hideUnassignedLabels = !!v;
-  applyLabelTexts();
+export function setupUnassignedIconsToggle(buttonId) {
+  const btn = document.getElementById(buttonId);
+  if (!btn) return;
+  let visible = localStorage.getItem(UNASSIGNED_ICONS_KEY) === 'true';
+  showUnassignedIcons = visible;
+  const updateBtn = () => {
+    if (visible) { btn.innerHTML = '<i class="fas fa-layer-group mr-1"></i>Иконки вкл'; btn.classList.add('bg-indigo-600', 'text-white'); btn.classList.remove('bg-gray-200', 'dark:bg-gray-700'); }
+    else { btn.innerHTML = '<i class="fas fa-layer-group mr-1"></i>Иконки выкл'; btn.classList.remove('bg-indigo-600', 'text-white'); btn.classList.add('bg-gray-200', 'dark:bg-gray-700'); }
+    buildLabelsLayer();
+  };
+  updateBtn();
+  btn.addEventListener('click', () => { visible = !visible; showUnassignedIcons = visible; 
+    localStorage.setItem(UNASSIGNED_ICONS_KEY, String(visible)); 
+    updateBtn(); 
+    if (typeof window.updateFsVisualToggles === 'function') window.updateFsVisualToggles();
+  });
 }
 
+export function setHideUnassignedLabels(v) { hideUnassignedLabels = !!v; buildLabelsLayer(); }
+
 function toggleSelection(el) {
-  if (el.classList.contains('selected')) {
-    el.classList.remove('selected');
-    selectedTerritories.delete(el.id);
-  } else {
-    el.classList.add('selected');
-    selectedTerritories.add(el.id);
-  }
+  if (el.classList.contains('selected')) { el.classList.remove('selected'); selectedTerritories.delete(el.id); }
+  else { el.classList.add('selected'); selectedTerritories.add(el.id); }
 }
 
 export function clearSelection() {
@@ -421,14 +584,8 @@ export function selectTerritory(id, selected = true) {
 
 export function selectAllFiltered(filterFn) {
   if (!svgRoot) return 0;
-  const ids = getAllTerritoryIds();
   let count = 0;
-  ids.forEach(id => {
-    if (!filterFn || filterFn(id)) {
-      selectTerritory(id, true);
-      count++;
-    }
-  });
+  getAllTerritoryIds().forEach(id => { if (!filterFn || filterFn(id)) { selectTerritory(id, true); count++; } });
   return count;
 }
 
@@ -436,21 +593,15 @@ async function loadAllData() {
   const ls = await getDocs(collection(db, 'label_settings'));
   labelSettings = {};
   ls.forEach(d => labelSettings[d.id] = d.data());
-
   const al = await getDocs(collection(db, 'alliances'));
   allianceMap = {};
   al.forEach(d => allianceMap[d.id] = { id: d.id, ...d.data() });
-
   const tt = await getDocs(collection(db, 'territories'));
   territoryAssignments = {};
   tt.forEach(d => territoryAssignments[d.id] = d.data().allianceId);
 }
 
-export function applyAll() {
-  applyTerritoryColors();
-  applyLabelSettings();
-  applyLabelTexts();
-}
+export function applyAll() { applyTerritoryColors(); buildLabelsLayer(); }
 
 export function applyTerritoryColors(assignments = null, alliances = null) {
   if (!svgRoot) return;
@@ -464,37 +615,14 @@ export function applyTerritoryColors(assignments = null, alliances = null) {
 }
 
 export function applyLabelTexts(assignments = null, alliances = null) {
-  if (!svgRoot) return;
-  const a = alliances || allianceMap;
-  const as = assignments || territoryAssignments;
-  svgRoot.querySelectorAll('#labels .label').forEach(txt => {
-    const id = txt.dataset.id;
-    const allianceId = as[id];
-    if (allianceId && a[allianceId]) {
-      txt.textContent = a[allianceId].tag;
-    } else {
-      txt.textContent = hideUnassignedLabels ? '' : 'ABC';
-    }
-  });
+  if (assignments) territoryAssignments = assignments;
+  if (alliances) allianceMap = alliances;
+  buildLabelsLayer();
 }
 
 export function applyLabelSettings(settings = null) {
-  if (!svgRoot) return;
-  const s = settings || labelSettings;
-  svgRoot.querySelectorAll('#labels .label').forEach(txt => {
-    const id = txt.dataset.id;
-    const cfg = s[id] || {};
-    const dx = cfg.dx || 0, dy = cfg.dy || 0;
-    const rot = cfg.rotation || 0, scale = cfg.scale || 1;
-    txt.style.transformOrigin = 'center center';
-    txt.style.transformBox = 'fill-box';
-    txt.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${scale})`;
-    if (cfg.fill !== undefined && cfg.fill !== null && cfg.fill !== '') txt.style.fill = cfg.fill;
-    else txt.style.fill = '';
-    txt.style.stroke = '';
-    txt.style.strokeWidth = '';
-    txt.style.paintOrder = '';
-  });
+  if (settings) labelSettings = settings;
+  buildLabelsLayer();
 }
 
 export function toggleLabels(show) {
@@ -504,13 +632,10 @@ export function toggleLabels(show) {
 }
 
 export function getLabelSettings() { return { ...labelSettings }; }
-export function setLabelSettings(s) { labelSettings = s; applyLabelSettings(); }
-
+export function setLabelSettings(s) { labelSettings = s; buildLabelsLayer(); }
 export function setPreviewData(alliances, assignments) {
-  allianceMap = alliances;
-  territoryAssignments = assignments;
-  applyTerritoryColors(assignments, alliances);
-  applyLabelTexts(assignments, alliances);
+  allianceMap = alliances; territoryAssignments = assignments;
+  applyTerritoryColors(assignments, alliances); buildLabelsLayer();
 }
 
 export async function saveLabelSettings(newSettings, replace = false) {
@@ -521,7 +646,7 @@ export async function saveLabelSettings(newSettings, replace = false) {
   }
   await Promise.all(promises);
   labelSettings = { ...labelSettings, ...newSettings };
-  applyLabelSettings();
+  buildLabelsLayer();
 }
 
 export function getTerritoryAssignments() { return { ...territoryAssignments }; }
@@ -540,13 +665,10 @@ export function computeAllianceStats(assignments) {
   return stats;
 }
 
-// ⭐ EXPORT PNG с поддержкой темы
 export async function exportMapPNG(withLabels, theme = 'light') {
   try {
     if (!originalSvgText) { alert('Карта ещё не загружена.'); return; }
     const isDark = theme === 'dark';
-
-    // Цвета в зависимости от выбранной темы (не от темы страницы)
     const canvasBg = isDark ? '#1e293b' : '#ffffff';
     const emptyFill = isDark ? '#334155' : '#ffffff';
     const arcadiaFill = isDark ? '#0f172a' : '#f4f4f4';
@@ -562,18 +684,15 @@ export async function exportMapPNG(withLabels, theme = 'light') {
     const doc = parser.parseFromString(originalSvgText, 'image/svg+xml');
     const svg = doc.documentElement;
     if (!svg || svg.nodeName === 'parsererror') throw new Error('Не удалось распарсить SVG');
-    svg.removeAttribute('style');
-    svg.removeAttribute('width');
-    svg.removeAttribute('height');
+    svg.removeAttribute('style'); svg.removeAttribute('width'); svg.removeAttribute('height');
 
-    const labels = svg.getElementById('labels');
-    if (labels && !withLabels) labels.remove();
+    const labelsLayer = svg.getElementById('labels');
+    if (labelsLayer && !withLabels) labelsLayer.remove();
 
     svg.querySelectorAll('.territory').forEach(t => {
       const allianceId = territoryAssignments[t.id];
       const alliance = allianceId ? allianceMap[allianceId] : null;
-      t.removeAttribute('class');
-      t.removeAttribute('style');
+      t.removeAttribute('class'); t.removeAttribute('style');
       t.style.fill = alliance ? alliance.color : emptyFill;
       const isTrade = String(t.id).startsWith('T-');
       t.style.stroke = isTrade ? tradeStroke : territoryStroke;
@@ -581,40 +700,58 @@ export async function exportMapPNG(withLabels, theme = 'light') {
       if (t.id === 'A') t.style.fill = arcadiaFill;
     });
 
-    if (withLabels && labels) {
-      labels.querySelectorAll('.label').forEach(txt => {
-        const id = txt.dataset.id;
-        const cfg = labelSettings[id] || {};
-        const dx = cfg.dx || 0, dy = cfg.dy || 0;
-        const rot = cfg.rotation || 0, scale = cfg.scale || 1;
-        const ox = parseFloat(txt.getAttribute('x')) || 0;
-        const oy = parseFloat(txt.getAttribute('y')) || 0;
+    if (withLabels && labelsLayer) {
+      labelsLayer.querySelectorAll('.label-group, .label').forEach(el => el.remove());
+      const NS = 'http://www.w3.org/2000/svg';
+      getAllTerritoryIds().forEach(id => {
         const allianceId = territoryAssignments[id];
+        const info = getTerritoryLevelLabel(id);
+        if (!info) return;
         const alliance = allianceId ? allianceMap[allianceId] : null;
-        if (!alliance && hideUnassignedLabels) { txt.remove(); return; }
-        txt.textContent = alliance ? alliance.tag : 'ABC';
-        txt.removeAttribute('class');
-        txt.setAttribute('transform',
-          `translate(${ox + dx} ${oy + dy}) rotate(${rot}) scale(${scale}) translate(${-ox} ${-oy})`
-        );
-        txt.style.fill = cfg.fill || labelFill;
-        txt.style.stroke = labelStroke;
-        txt.style.strokeWidth = '2px';
-        txt.style.strokeLinejoin = 'round';
-        txt.style.paintOrder = 'stroke';
-        txt.style.fontFamily = 'Arial, sans-serif';
-        txt.style.fontSize = '10px';
-        txt.style.textAnchor = 'middle';
-        txt.style.dominantBaseline = 'central';
+        if (!alliance) return;
+        const cfg = labelSettings[id] || {};
+        const dx = cfg.dx || 0, dy = cfg.dy || 0, rot = cfg.rotation || 0, scale = cfg.scale || 1;
+        const srcLabel = svgRoot.querySelector(`#labels .label[data-id="${id}"]`);
+        if (!srcLabel) return;
+        const ox = parseFloat(srcLabel.getAttribute('x')) || 0;
+        const oy = parseFloat(srcLabel.getAttribute('y')) || 0;
+        const tag = alliance.tag;
+        const fits = doesTextFit(id, tag, ox, oy, cfg);
+        const showTag = fits;
+        const tagWidth = measureTextWidth(tag);
+        const finalWidth = showTag ? (ICON_SIZE + ICON_GAP + tagWidth) : ICON_SIZE;
+        const startX = -finalWidth / 2;
+
+        const group = document.createElementNS(NS, 'g');
+        group.setAttribute('transform', `translate(${ox + dx} ${oy + dy}) rotate(${rot}) scale(${scale})`);
+
+        const iconG = document.createElementNS(NS, 'g');
+        iconG.setAttribute('transform', `translate(${startX} -${ICON_HALF})`);
+
+        let fill, stroke, points;
+        if (info.kind === 'bastion') { fill = '#7c3aed'; stroke = '#1e1b4b'; points = `${ICON_HALF},0 ${ICON_SIZE},0 ${ICON_SIZE},${ICON_HALF + 3} ${ICON_HALF},${ICON_SIZE} 0,${ICON_HALF + 3} 0,0`; }
+        else if (info.kind === 'trade') { fill = '#f59e0b'; stroke = '#7c2d12'; points = `${ICON_HALF},0 ${ICON_SIZE},${ICON_HALF} ${ICON_HALF},${ICON_SIZE} 0,${ICON_HALF}`; }
+        else { fill = '#3b82f6'; stroke = '#1e3a8a'; points = `0,${ICON_HALF - 1} ${ICON_HALF},0 ${ICON_SIZE},${ICON_HALF - 1} ${ICON_SIZE},${ICON_SIZE} 0,${ICON_SIZE}`; }
+        
+        const shape = document.createElementNS(NS, 'polygon');
+        shape.setAttribute('points', points); shape.setAttribute('fill', fill); shape.setAttribute('stroke', stroke); shape.setAttribute('stroke-width', '0.6'); shape.setAttribute('stroke-linejoin', 'round');
+        iconG.appendChild(shape);
+
+        const num = document.createElementNS(NS, 'text');
+        num.setAttribute('x', String(ICON_HALF)); num.setAttribute('y', String(ICON_HALF + 0.5)); num.setAttribute('text-anchor', 'middle'); num.setAttribute('dominant-baseline', 'central'); num.setAttribute('font-family', 'Arial, sans-serif'); num.setAttribute('font-size', '6.5'); num.setAttribute('font-weight', 'bold'); num.setAttribute('fill', getIconTextColor(info.kind)); num.textContent = String(info.level);
+        iconG.appendChild(num); group.appendChild(iconG);
+
+        if (showTag) {
+          const txt = document.createElementNS(NS, 'text');
+          txt.setAttribute('x', String(startX + ICON_SIZE + ICON_GAP)); txt.setAttribute('y', '0'); txt.setAttribute('text-anchor', 'start'); txt.setAttribute('dominant-baseline', 'central'); txt.setAttribute('font-family', 'Arial, sans-serif'); txt.setAttribute('font-size', '9'); txt.setAttribute('font-weight', 'bold'); txt.setAttribute('fill', cfg.fill || labelFill); txt.setAttribute('stroke', labelStroke); txt.setAttribute('stroke-width', '1'); txt.setAttribute('stroke-linejoin', 'round'); txt.setAttribute('paint-order', 'stroke');
+          txt.textContent = tag; group.appendChild(txt);
+        }
+        labelsLayer.appendChild(group);
       });
     }
 
     const vb = originalSvgViewBox || [...FALLBACK_VIEWBOX];
-    svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    svg.setAttribute('viewBox', vb.join(' '));
-    svg.setAttribute('width', String(vb[2]));
-    svg.setAttribute('height', String(vb[3]));
-
+    svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg'); svg.setAttribute('viewBox', vb.join(' ')); svg.setAttribute('width', String(vb[2])); svg.setAttribute('height', String(vb[3]));
     const svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(svg);
     const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -622,11 +759,7 @@ export async function exportMapPNG(withLabels, theme = 'light') {
     const mapHeight = Math.round(width * vb[3] / vb[2]);
 
     const img = new Image();
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = (e) => { console.error('img load error', e); rej(e); };
-      img.src = url;
-    });
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
 
     const legend = buildLegend();
     const cols = Math.min(3, Math.max(1, Math.ceil(legend.length / 4)));
@@ -635,45 +768,24 @@ export async function exportMapPNG(withLabels, theme = 'light') {
     const legendHeight = legend.length ? L_PAD * 2 + rows * L_LINE : 0;
 
     const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = mapHeight + legendHeight;
+    canvas.width = width; canvas.height = mapHeight + legendHeight;
     const ctx = canvas.getContext('2d');
 
-    // Фон всей картинки
-    ctx.fillStyle = canvasBg;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = canvasBg; ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, width, mapHeight);
     URL.revokeObjectURL(url);
 
-    // Легенда
     if (legend.length) {
-      ctx.strokeStyle = legendLine;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(0, mapHeight);
-      ctx.lineTo(width, mapHeight);
-      ctx.stroke();
-
+      ctx.strokeStyle = legendLine; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, mapHeight); ctx.lineTo(width, mapHeight); ctx.stroke();
       const colWidth = width / cols;
       const totalTerr = (item) => item.bastions + item.general + item.trade;
-
       legend.forEach((item, i) => {
-        const col = Math.floor(i / rows);
-        const row = i % rows;
-        const x = L_PAD + col * colWidth;
-        const y = mapHeight + L_PAD + row * L_LINE + L_LINE / 2;
-
-        ctx.fillStyle = item.color;
-        ctx.fillRect(x, y - L_SWATCH / 2, L_SWATCH, L_SWATCH);
-        ctx.strokeStyle = legendBorder;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x, y - L_SWATCH / 2, L_SWATCH, L_SWATCH);
-
-        ctx.fillStyle = legendText;
-        ctx.font = `bold ${L_FONT}px Arial, sans-serif`;
-        ctx.textBaseline = 'middle';
-        const text = `${item.rank}. ${item.tag} — ${totalTerr(item)}  |  Б:${item.bastions} Г:${item.general} Т:${item.trade}`;
-        ctx.fillText(text, x + L_SWATCH + 10, y);
+        const col = Math.floor(i / rows), row = i % rows;
+        const x = L_PAD + col * colWidth, y = mapHeight + L_PAD + row * L_LINE + L_LINE / 2;
+        ctx.fillStyle = item.color; ctx.fillRect(x, y - L_SWATCH / 2, L_SWATCH, L_SWATCH);
+        ctx.strokeStyle = legendBorder; ctx.lineWidth = 1; ctx.strokeRect(x, y - L_SWATCH / 2, L_SWATCH, L_SWATCH);
+        ctx.fillStyle = legendText; ctx.font = `bold ${L_FONT}px Arial, sans-serif`; ctx.textBaseline = 'middle';
+        ctx.fillText(`${item.rank}. ${item.tag} — ${totalTerr(item)}  |  Б:${item.bastions} Г:${item.general} Т:${item.trade}`, x + L_SWATCH + 10, y);
       });
     }
 
@@ -682,7 +794,7 @@ export async function exportMapPNG(withLabels, theme = 'light') {
     link.href = canvas.toDataURL('image/png');
     link.click();
   } catch (err) {
-    console.error('exportMapPNG failed:', err);
+    console.error(err);
     alert('Ошибка экспорта PNG: ' + err.message);
   }
 }
@@ -713,4 +825,23 @@ export function getFilteredTerritories(filters) {
     }
   });
   return ids;
+}
+
+// ⭐ Функции для управления состоянием извне
+export function isLabelsVisible() {
+  return localStorage.getItem(LABELS_STATE_KEY) !== 'false';
+}
+
+export function isUnassignedIconsVisible() {
+  return localStorage.getItem(UNASSIGNED_ICONS_KEY) === 'true';
+}
+
+export function toggleLabelsExternal() {
+  const btn = document.getElementById('btn-toggle-labels');
+  if (btn) btn.click();
+}
+
+export function toggleIconsExternal() {
+  const btn = document.getElementById('btn-toggle-icons');
+  if (btn) btn.click();
 }

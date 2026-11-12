@@ -3,18 +3,21 @@ import {
   collection, getDocs, doc, setDoc, deleteDoc, updateDoc, addDoc,
   serverTimestamp, getDoc
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-import { initTheme, toast, nowString, formatDate, setMeta } from './utils.js';
+import { initTheme, toast, nowString, formatDate, setMeta, customConfirm } from './utils.js';
 import {
   initMap, toggleLabels, exportMapPNG, getLabelSettings, setLabelSettings,
   saveLabelSettings, selectTerritory, getSelected, clearSelection, selectAllFiltered,
   getAllTerritoryIds, getTerritoryTypes, getFilteredTerritories,
   setPreviewData, getTerritoryType, getTerritoryLevel, setupLabelsToggle,
-  computeAllianceStats
+  setupUnassignedIconsToggle,
+  computeAllianceStats, canSelectWithAdjacency,
+  isLabelsVisible, isUnassignedIconsVisible, toggleLabelsExternal, toggleIconsExternal
 } from './map-core.js';
 import { requireAuth, logout } from './auth.js';
-import { randomColor } from './palette.js';
+import { pickUniqueColor } from './palette.js';
 
-// ==== ДИАГНОСТИКА ====
+const CITY_TYPES = ['D', 'Z', 'G', 'M', 'C', 'V'];
+
 function addStatus(msg, ok = true) {
   const banner = document.getElementById('status-banner');
   const list = document.getElementById('status-list');
@@ -27,7 +30,6 @@ function addStatus(msg, ok = true) {
   console.log(`[STATUS ${ok ? 'OK' : 'ERR'}] ${msg}`);
 }
 
-// ==== СОСТОЯНИЕ ====
 let session = null;
 let mode = 'territory-to-alliance';
 let selectedAllianceId = null;
@@ -36,6 +38,11 @@ let workingAssignments = {};
 let filters = {};
 let savedLayoutId = null;
 let mapReady = false;
+let adjacencyMode = false;
+let respectLimits = false;
+let limitCities = 6;
+let limitBastions = 6;
+let limitTradePosts = Infinity;
 let editingAllianceId = null;
 
 function initFilters() {
@@ -50,12 +57,52 @@ function initFilters() {
   }
 }
 
-// ==== INIT ====
+// ⭐ Помощники для лимитов
+function parseLimitInput(val) {
+  if (val === undefined || val === null) return Infinity;
+  const s = String(val).trim();
+  if (s === '' || s === '∞' || s.toLowerCase() === 'infinity') return Infinity;
+  const num = parseInt(s, 10);
+  return isNaN(num) ? Infinity : Math.max(0, num);
+}
+
+function countAllianceTerritories(aid) {
+  let cities = 0, bastions = 0, trade = 0;
+  for (const [tid, a] of Object.entries(workingAssignments)) {
+    if (a !== aid) continue;
+    const t = getTerritoryType(tid);
+    if (t === 'B') bastions++;
+    else if (t === 'T') trade++;
+    else cities++;
+  }
+  return { cities, bastions, trade };
+}
+
+function syncLimitUI() {
+  const setVal = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.value = val === Infinity ? '∞' : val;
+  };
+  setVal('limit-cities', limitCities);
+  setVal('fs-limit-cities', limitCities);
+  setVal('limit-bastions', limitBastions);
+  setVal('fs-limit-bastions', limitBastions);
+  setVal('limit-trade', limitTradePosts);
+  setVal('fs-limit-trade', limitTradePosts);
+
+  const setChk = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = val;
+  };
+  setChk('chk-respect-limits', respectLimits);
+  setChk('fs-chk-respect-limits', respectLimits);
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   addStatus('✓ JS-модуль manager.js загружен');
 
   session = requireAuth(['manager']);
-  if (!session) { addStatus('✗ Не авторизован — редирект на index.html', false); return; }
+  if (!session) { addStatus('✗ Не авторизован', false); return; }
   addStatus(`✓ Сессия: ${session.name}${session.isMainManager ? ' (Главный)' : ''}`);
 
   try { initFilters(); addStatus('✓ Фильтры инициализированы'); }
@@ -71,19 +118,109 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (!session.isMainManager) document.getElementById('btn-approve-text').textContent = 'На утверждение';
   else document.getElementById('user-badge').classList.remove('hidden');
 
-  document.getElementById('btn-logout').addEventListener('click', () => {
-    if (confirm('Выйти? Несохранённые изменения будут потеряны.')) logout();
+  document.getElementById('btn-logout').addEventListener('click', async () => {
+    if (await customConfirm('Выйти? Несохранённые изменения будут потеряны.')) logout();
   });
 
   try {
-    const res = await initMap({ containerId: 'map-container', interactive: true, clickHandler: onTerritoryClick });
+    const res = await initMap({
+      containerId: 'map-container',
+      interactive: true,
+      clickHandler: onTerritoryClick,
+      onFullscreenEditToggle: (active) => {
+        const panel = document.getElementById('fullscreen-edit-panel');
+        if (panel) {
+          panel.classList.toggle('hidden', !active);
+          if (active) updateFsVisualToggles();
+        }
+      }
+    });
+    
     if (!res) {
-      addStatus('✗ Карта НЕ загружена — проверьте assets/map.svg', false);
+      addStatus('✗ Карта НЕ загружена', false);
       toast('Карта не загружена', 'error');
       return;
     }
     mapReady = true;
     addStatus('✓ Карта загружена');
+
+    const mapContainer = document.getElementById('map-container');
+    if (mapContainer && !document.getElementById('fullscreen-edit-panel')) {
+      const panelHtml = `
+        <div id="fullscreen-edit-panel" class="hidden absolute top-0 right-0 h-full w-[320px] bg-white/95 dark:bg-gray-800/95 backdrop-blur shadow-2xl z-30 overflow-y-auto flex flex-col border-l border-gray-200 dark:border-gray-700">
+          <div class="p-3 border-b dark:border-gray-700 flex justify-between items-center sticky top-0 bg-white/95 dark:bg-gray-800/95 z-10">
+            <h3 class="font-bold text-sm"><i class="fas fa-tools mr-1 text-blue-500"></i>Инструменты</h3>
+            <button id="btn-close-fullscreen-panel" class="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"><i class="fas fa-times"></i></button>
+          </div>
+          <div class="p-3 space-y-4 text-sm">
+            <div class="grid grid-cols-2 gap-2 pb-2 border-b dark:border-gray-700">
+              <button id="fs-btn-labels" class="px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded text-gray-700 dark:text-gray-200">
+                <i class="fas fa-eye mr-1"></i>Подписи
+              </button>
+              <button id="fs-btn-icons" class="px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded text-gray-700 dark:text-gray-200">
+                <i class="fas fa-layer-group mr-1"></i>Иконки
+              </button>
+            </div>
+            <div>
+              <div class="font-semibold mb-1">Режим:</div>
+              <div class="space-y-1 text-xs">
+                <label class="flex items-center"><input type="radio" name="fs-edit-mode" value="territory-to-alliance" checked class="mr-2">Территории → Союз</label>
+                <label class="flex items-center"><input type="radio" name="fs-edit-mode" value="alliance-to-territory" class="mr-2">Союз → Территории</label>
+              </div>
+            </div>
+            <div>
+              <label class="block font-semibold mb-1">Активный союз:</label>
+              <div class="flex gap-1">
+                <select id="fs-alliance-select" class="flex-1 border rounded p-1.5 dark:bg-gray-700 dark:border-gray-600 text-xs"></select>
+                <button id="fs-btn-apply-alliance" class="px-2 py-1.5 bg-blue-600 text-white rounded text-xs whitespace-nowrap hover:bg-blue-700"><i class="fas fa-check"></i></button>
+              </div>
+            </div>
+            <label class="flex items-center text-xs cursor-pointer">
+              <input type="checkbox" id="fs-chk-adjacency" class="mr-2">
+              Только соседние территории
+            </label>
+            <label class="flex items-center text-xs cursor-pointer">
+              <input type="checkbox" id="fs-chk-respect-limits" class="mr-2">
+              Учитывать лимиты территорий
+            </label>
+            <div id="fs-selection-controls" class="grid grid-cols-2 gap-1">
+              <button id="fs-btn-select-all" class="px-2 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700"><i class="fas fa-check-square mr-1"></i>Все</button>
+              <button id="fs-btn-clear-selection" class="px-2 py-1 bg-gray-600 text-white rounded text-xs hover:bg-gray-700"><i class="fas fa-square mr-1"></i>Сброс</button>
+            </div>
+            <div class="space-y-1">
+              <button id="fs-btn-clear-selected" class="w-full px-2 py-1 bg-yellow-600 text-white rounded text-xs hover:bg-yellow-700">Очистить выбранное</button>
+              <button id="fs-btn-clear-all" class="w-full px-2 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700">Очистить всё</button>
+              <button id="fs-btn-clear-filtered" class="w-full px-2 py-1 bg-orange-600 text-white rounded text-xs hover:bg-orange-700">Очистить по фильтрам</button>
+            </div>
+            <div class="pt-2 border-t dark:border-gray-700">
+              <button id="fs-btn-shuffle-colors" class="w-full px-2 py-2 bg-pink-600 text-white rounded text-xs hover:bg-pink-700 font-semibold">
+                <i class="fas fa-random mr-1"></i>Перемешать цвета
+              </button>
+            </div>
+            <div class="pt-2 border-t dark:border-gray-700">
+              <div class="font-semibold mb-1 text-xs">Лимиты:</div>
+              <div class="grid grid-cols-3 gap-1">
+                <div>
+                  <label class="block text-[10px] text-gray-500">Города</label>
+                  <input type="number" id="fs-limit-cities" value="6" min="0" class="w-full border rounded p-1 dark:bg-gray-700 dark:border-gray-600 text-xs">
+                </div>
+                <div>
+                  <label class="block text-[10px] text-gray-500">Бастионы</label>
+                  <input type="number" id="fs-limit-bastions" value="6" min="0" class="w-full border rounded p-1 dark:bg-gray-700 dark:border-gray-600 text-xs">
+                </div>
+                <div>
+                  <label class="block text-[10px] text-gray-500">Торг.</label>
+                  <input type="text" id="fs-limit-trade" value="∞" class="w-full border rounded p-1 dark:bg-gray-700 dark:border-gray-600 text-xs">
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+      mapContainer.insertAdjacentHTML('beforeend', panelHtml);
+      initFullscreenPanelControls();
+      syncLimitUI();
+    }
   } catch (e) {
     addStatus('✗ Ошибка карты: ' + e.message, false); console.error(e); return;
   }
@@ -91,6 +228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     await loadCurrentState();
     addStatus(`✓ Данные загружены: ${workingAlliances.length} союзов, ${Object.keys(workingAssignments).length} назначений`);
+    syncLimitUI();
   } catch (e) {
     addStatus('✗ Ошибка данных: ' + e.message, false); console.error(e);
     toast('Ошибка данных: ' + e.message, 'error');
@@ -108,6 +246,12 @@ async function loadCurrentState() {
       workingAlliances = s.alliances || [];
       workingAssignments = s.assignments || {};
       savedLayoutId = s.layoutId || null;
+      if (s.limits) {
+        limitCities = s.limits.cities ?? 6;
+        limitBastions = s.limits.bastions ?? 6;
+        limitTradePosts = s.limits.trade ?? Infinity;
+        respectLimits = s.limits.respect ?? false;
+      }
       applyWorking();
       return;
     } catch {}
@@ -134,11 +278,18 @@ function applyWorking() {
 
 function saveWorkingToSession() {
   sessionStorage.setItem('ts_working_' + session.keyId, JSON.stringify({
-    alliances: workingAlliances, assignments: workingAssignments, layoutId: savedLayoutId
+    alliances: workingAlliances, 
+    assignments: workingAssignments, 
+    layoutId: savedLayoutId,
+    limits: {
+      cities: limitCities,
+      bastions: limitBastions,
+      trade: limitTradePosts,
+      respect: respectLimits
+    }
   }));
 }
 
-// ⭐ Сохраняет в существующий layout ИЛИ создаёт новый, если документ удалён
 async function updateLayoutOrCreate(updateData, fallbackFullData) {
   if (savedLayoutId) {
     try {
@@ -147,7 +298,6 @@ async function updateLayoutOrCreate(updateData, fallbackFullData) {
     } catch (e) {
       const isNotFound = e.code === 'not-found' || /No document to update/i.test(e.message || '');
       if (!isNotFound) throw e;
-      console.warn('[manager] savedLayoutId указывает на удалённый документ, создаём новый:', savedLayoutId);
       savedLayoutId = null;
     }
   }
@@ -156,7 +306,6 @@ async function updateLayoutOrCreate(updateData, fallbackFullData) {
   return savedLayoutId;
 }
 
-// ==== КЛИК ====
 function onTerritoryClick(id, el) {
   if (!mapReady) return;
   if (id === 'A') return;
@@ -164,11 +313,47 @@ function onTerritoryClick(id, el) {
 
   if (mode === 'territory-to-alliance') {
     const isSel = el.classList.contains('selected');
+    if (!isSel && adjacencyMode) {
+      const selected = getSelected();
+      if (!canSelectWithAdjacency(id, selected, true)) {
+        toast('Можно выбирать только соседние территории', 'error');
+        return;
+      }
+    }
     selectTerritory(id, !isSel);
   } else {
     if (!selectedAllianceId) { toast('Сначала выберите союз', 'error'); return; }
-    // ⭐ Повторный клик по территории этого же союза — снимаем назначение
-    if (workingAssignments[id] === selectedAllianceId) {
+    const isRemoving = workingAssignments[id] === selectedAllianceId;
+    
+    if (!isRemoving) {
+      // ⭐ Проверка лимитов
+      if (respectLimits) {
+        const counts = countAllianceTerritories(selectedAllianceId);
+        const type = getTerritoryType(id);
+        if (type === 'B' && counts.bastions >= limitBastions) {
+          toast(`Лимит бастионов для этого союза достигнут (${limitBastions})`, 'error'); return;
+        }
+        if (type === 'T' && counts.trade >= limitTradePosts) {
+          toast(`Лимит торговых постов для этого союза достигнут (${limitTradePosts})`, 'error'); return;
+        }
+        if (CITY_TYPES.includes(type) && counts.cities >= limitCities) {
+          toast(`Лимит городов для этого союза достигнут (${limitCities})`, 'error'); return;
+        }
+      }
+
+      // ⭐ Проверка соседства
+      if (adjacencyMode) {
+        const allianceTerrs = Object.keys(workingAssignments).filter(k => workingAssignments[k] === selectedAllianceId);
+        if (allianceTerrs.length > 0) {
+          if (!canSelectWithAdjacency(id, allianceTerrs, true)) {
+            toast('Территория должна граничить с уже назначенными территориями этого союза', 'error');
+            return;
+          }
+        }
+      }
+    }
+
+    if (isRemoving) {
       delete workingAssignments[id];
     } else {
       workingAssignments[id] = selectedAllianceId;
@@ -201,24 +386,77 @@ function applyAllianceToSelected(silent = false) {
   const alliance = workingAlliances.find(a => a.id === selectedAllianceId);
   if (!alliance) { if (!silent) toast('Союз не найден', 'error'); return; }
 
+  // Пакетная проверка лимитов
+  if (respectLimits) {
+    const counts = countAllianceTerritories(selectedAllianceId);
+    let addCities = 0, addBastions = 0, addTrade = 0;
+    sel.forEach(id => {
+      if (workingAssignments[id] === selectedAllianceId) return;
+      const type = getTerritoryType(id);
+      if (type === 'B') addBastions++;
+      else if (type === 'T') addTrade++;
+      else addCities++;
+    });
+
+    if (counts.bastions + addBastions > limitBastions) {
+      if (!silent) toast(`Превышен лимит бастионов (${limitBastions})`, 'error'); return;
+    }
+    if (counts.trade + addTrade > limitTradePosts) {
+      if (!silent) toast(`Превышен лимит торговых постов (${limitTradePosts})`, 'error'); return;
+    }
+    if (counts.cities + addCities > limitCities) {
+      if (!silent) toast(`Превышен лимит городов (${limitCities})`, 'error'); return;
+    }
+  }
+
   sel.forEach(id => { workingAssignments[id] = selectedAllianceId; });
   clearSelection();
   applyWorking();
   saveWorkingToSession();
+  renderAlliancesList();
   toast(`Назначено: ${sel.length} → ${alliance.tag}`, 'success');
 }
 
-// ==== UI BINDINGS ====
-// ⭐ Показывает/скрывает кнопки выделения в зависимости от режима
+function setMode(newMode) {
+  mode = newMode;
+  document.querySelectorAll('input[name="edit-mode"], input[name="fs-edit-mode"]').forEach(r => {
+    r.checked = (r.value === mode);
+  });
+  clearSelection();
+  renderAll();
+  updateModeUI();
+}
+
+function setSelectedAlliance(id) {
+  selectedAllianceId = id;
+  const mainSel = document.getElementById('alliance-select');
+  const fsSel = document.getElementById('fs-alliance-select');
+  if (mainSel) mainSel.value = id || '';
+  if (fsSel) fsSel.value = id || '';
+}
+
+function setAdjacencyMode(val) {
+  adjacencyMode = val;
+  const mainChk = document.getElementById('chk-adjacency');
+  const fsChk = document.getElementById('fs-chk-adjacency');
+  if (mainChk) mainChk.checked = val;
+  if (fsChk) fsChk.checked = val;
+}
+
 function updateModeUI() {
   const isTerritoryMode = mode === 'territory-to-alliance';
+  
   const selControls = document.getElementById('selection-controls');
   const clearSel = document.getElementById('btn-clear-selected');
   if (selControls) selControls.classList.toggle('hidden', !isTerritoryMode);
   if (clearSel) clearSel.classList.toggle('hidden', !isTerritoryMode);
+
+  const fsSelControls = document.getElementById('fs-selection-controls');
+  const fsClearSel = document.getElementById('fs-btn-clear-selected');
+  if (fsSelControls) fsSelControls.classList.toggle('hidden', !isTerritoryMode);
+  if (fsClearSel) fsClearSel.classList.toggle('hidden', !isTerritoryMode);
 }
 
-// ==== UI BINDINGS ====
 function initUIBindings() {
   const on = (id, ev, fn) => {
     const el = document.getElementById(id);
@@ -226,25 +464,23 @@ function initUIBindings() {
     el.addEventListener(ev, fn);
   };
 
-    document.querySelectorAll('input[name="edit-mode"]').forEach(r => {
-    r.addEventListener('change', e => {
-      mode = e.target.value;
-      clearSelection();
-      renderAll();
-      updateModeUI();
-    });
+  document.querySelectorAll('input[name="edit-mode"]').forEach(r => {
+    r.addEventListener('change', e => setMode(e.target.value));
   });
 
-
-on('btn-download', 'click', () => document.getElementById('modal-download').classList.remove('hidden'));
-document.getElementById('modal-download').addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-download]');
-  if (!btn) return;
-  const [theme, mode] = btn.dataset.download.split('-');
-  document.getElementById('modal-download').classList.add('hidden');
-  exportMapPNG(mode === 'labels', theme);
-});
-on('btn-close-download', 'click', () => document.getElementById('modal-download').classList.add('hidden'));
+  on('btn-toggle-labels', 'click', () => {
+    const l = document.getElementById('labels');
+    if (l) toggleLabels(l.style.display === 'none');
+  });
+  on('btn-download', 'click', () => document.getElementById('modal-download').classList.remove('hidden'));
+  document.getElementById('modal-download').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-download]');
+    if (!btn) return;
+    const [theme, mode] = btn.dataset.download.split('-');
+    document.getElementById('modal-download').classList.add('hidden');
+    exportMapPNG(mode === 'labels', theme);
+  });
+  on('btn-close-download', 'click', () => document.getElementById('modal-download').classList.add('hidden'));
 
   renderFilters();
 
@@ -263,70 +499,86 @@ on('btn-close-download', 'click', () => document.getElementById('modal-download'
     renderFilters(); highlightFiltered();
   });
 
+  const adjCb = document.getElementById('chk-adjacency');
+  if (adjCb) adjCb.addEventListener('change', e => {
+    setAdjacencyMode(e.target.checked);
+    toast(adjacencyMode ? 'Режим: только соседние территории' : 'Режим: любые территории', 'info');
+  });
+
+  // ⭐ Привязка чекбоксов лимитов
+  const chkLimits = document.getElementById('chk-respect-limits');
+  if (chkLimits) chkLimits.addEventListener('change', e => { respectLimits = e.target.checked; syncLimitUI(); saveWorkingToSession(); });
+
+  // ⭐ Привязка полей ввода лимитов
+  on('limit-cities', 'input', e => { limitCities = parseLimitInput(e.target.value); syncLimitUI(); saveWorkingToSession(); });
+  on('limit-bastions', 'input', e => { limitBastions = parseLimitInput(e.target.value); syncLimitUI(); saveWorkingToSession(); });
+  on('limit-trade', 'input', e => { limitTradePosts = parseLimitInput(e.target.value); syncLimitUI(); saveWorkingToSession(); });
+
   on('btn-select-all', 'click', () => {
     const count = selectAllFiltered(id => territoryPassesFilter(id));
     toast(`Выбрано: ${count}`, 'success');
   });
-
-  on('btn-clear-selection', 'click', () => {
-    clearSelection();
-    toast('Выбор сброшен', 'success');
-  });
+  on('btn-clear-selection', 'click', () => { clearSelection(); toast('Выбор сброшен', 'success'); });
 
   on('btn-add-alliance', 'click', () => {
     document.getElementById('modal-alliance').classList.remove('hidden');
     document.getElementById('al-tag').value = '';
     document.getElementById('al-name').value = '';
-    document.getElementById('al-color').value = randomColor();
+    const usedColors = workingAlliances.map(a => a.color);
+    document.getElementById('al-color').value = pickUniqueColor(usedColors);
   });
   on('btn-close-alliance', 'click', () => document.getElementById('modal-alliance').classList.add('hidden'));
   on('btn-save-alliance', 'click', saveNewAlliance);
+
+  on('btn-shuffle-colors', 'click', async () => {
+    if (!workingAlliances.length) return toast('Нет союзов', 'error');
+    if (!await customConfirm('Перемешать цвета всех союзов?')) return;
+    const used = [];
+    workingAlliances.forEach(a => {
+      a.color = pickUniqueColor(used);
+      used.push(a.color);
+    });
+    saveWorkingToSession();
+    renderAll();
+    toast('Цвета перемешаны', 'success');
+  });
+
   on('btn-save-edit-alliance', 'click', saveEditAlliance);
-on('btn-close-edit-alliance', 'click', () => {
-  document.getElementById('modal-edit-alliance').classList.add('hidden');
-  editingAllianceId = null;
-});
+  on('btn-close-edit-alliance', 'click', () => {
+    document.getElementById('modal-edit-alliance').classList.add('hidden');
+    editingAllianceId = null;
+  });
 
   on('alliance-select', 'change', e => {
-    selectedAllianceId = e.target.value || null;
+    setSelectedAlliance(e.target.value || null);
     if (mode === 'territory-to-alliance' && selectedAllianceId) {
       applyAllianceToSelected(true);
     }
   });
   on('btn-apply-alliance', 'click', () => applyAllianceToSelected(false));
 
-  on('lbl-dx', 'input', e => applyGlobalLabelStyle('dx', parseFloat(e.target.value)));
-  on('lbl-dy', 'input', e => applyGlobalLabelStyle('dy', parseFloat(e.target.value)));
-  on('lbl-rot', 'input', e => applyGlobalLabelStyle('rotation', parseFloat(e.target.value)));
-  on('lbl-scale', 'input', e => applyGlobalLabelStyle('scale', parseFloat(e.target.value)));
-
-  on('btn-reset-labels', 'click', async () => {
-    if (!confirm('Сбросить размещение всех подписей?')) return;
-    const all = {};
-    getAllTerritoryIds().forEach(id => {
-      all[id] = { dx: 0, dy: 0, rotation: 0, scale: 1 };
-    });
-    await saveLabelSettings(all, true);
-    toast('Сброшено', 'success');
-  });
-
   on('btn-clear-selected', 'click', () => {
     const sel = getSelected();
     if (!sel.length) return toast('Ничего не выбрано', 'error');
     sel.forEach(id => delete workingAssignments[id]);
     clearSelection(); applyWorking(); saveWorkingToSession();
+    renderAlliancesList();
     toast('Очищено выбранное', 'success');
   });
-  on('btn-clear-all', 'click', () => {
-    if (!confirm('Очистить все назначения?')) return;
+
+  on('btn-clear-all', 'click', async () => {
+    if (!await customConfirm('Очистить все назначения?')) return;
     workingAssignments = {}; clearSelection(); applyWorking(); saveWorkingToSession();
+    renderAlliancesList();
     toast('Очищено всё', 'success');
   });
-  on('btn-clear-filtered', 'click', () => {
-    if (!confirm('Очистить территории по фильтрам?')) return;
+
+  on('btn-clear-filtered', 'click', async () => {
+    if (!await customConfirm('Очистить территории по фильтрам?')) return;
     const ids = getFilteredTerritories(filters);
     ids.forEach(id => delete workingAssignments[id]);
     applyWorking(); saveWorkingToSession();
+    renderAlliancesList();
     toast(`Очищено ${ids.length}`, 'success');
   });
 
@@ -338,16 +590,16 @@ on('btn-close-edit-alliance', 'click', () => {
   on('btn-close-save', 'click', () => document.getElementById('modal-save').classList.add('hidden'));
   on('btn-do-save', 'click', doSaveLayout);
 
-  on('btn-cancel', 'click', () => {
-    if (confirm('Несохранённые изменения будут потеряны. Выйти?')) {
+  on('btn-cancel', 'click', async () => {
+    if (await customConfirm('Несохранённые изменения будут потеряны. Выйти?')) {
       sessionStorage.removeItem('ts_working_' + session.keyId);
       window.location.href = 'index.html';
     }
   });
 
-  on('btn-approve', 'click', () => {
+  on('btn-approve', 'click', async () => {
     if (session.isMainManager) {
-      if (confirm('Утвердить? Станет видимым для всех.')) doApprove();
+      if (await customConfirm('Утвердить? Станет видимым для всех.')) doApprove();
     } else {
       document.getElementById('modal-submit').classList.remove('hidden');
       document.getElementById('submit-name').value = nowString();
@@ -361,8 +613,137 @@ on('btn-close-edit-alliance', 'click', () => {
   on('btn-close-layouts', 'click', () => document.getElementById('modal-layouts').classList.add('hidden'));
 
   updateModeUI();
+  try { setupUnassignedIconsToggle('btn-toggle-icons'); } catch (e) { console.warn('setupUnassignedIconsToggle:', e); }
+}
 
-  setupLabelsToggle('btn-toggle-labels');
+function updateFsVisualToggles() {
+  const fsBtnLabels = document.getElementById('fs-btn-labels');
+  const fsBtnIcons = document.getElementById('fs-btn-icons');
+  if (fsBtnLabels) {
+    const isVis = isLabelsVisible();
+    fsBtnLabels.className = isVis ? 'px-2 py-1 bg-green-600 text-white text-xs rounded' : 'px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded text-gray-700 dark:text-gray-200';
+  }
+  if (fsBtnIcons) {
+    const isVis = isUnassignedIconsVisible();
+    fsBtnIcons.className = isVis ? 'px-2 py-1 bg-indigo-600 text-white text-xs rounded' : 'px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded text-gray-700 dark:text-gray-200';
+  }
+}
+window.updateFsVisualToggles = updateFsVisualToggles;
+
+function initFullscreenPanelControls() {
+  const panel = document.getElementById('fullscreen-edit-panel');
+  if (!panel) return;
+
+  const closeBtn = document.getElementById('btn-close-fullscreen-panel');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      const toolsBtn = document.querySelector('.map-controls [data-action="toggleFullscreenEdit"]');
+      if (toolsBtn) toolsBtn.click();
+    });
+  }
+
+  panel.querySelectorAll('input[name="fs-edit-mode"]').forEach(r => {
+    r.addEventListener('change', e => setMode(e.target.value));
+  });
+
+  const fsAdj = document.getElementById('fs-chk-adjacency');
+  if (fsAdj) fsAdj.addEventListener('change', e => {
+    setAdjacencyMode(e.target.checked);
+    toast(adjacencyMode ? 'Режим: только соседние территории' : 'Режим: любые территории', 'info');
+  });
+
+  // Привязка лимитов в fullscreen
+  const fsChkLimits = document.getElementById('fs-chk-respect-limits');
+  if (fsChkLimits) fsChkLimits.addEventListener('change', e => { respectLimits = e.target.checked; syncLimitUI(); saveWorkingToSession(); });
+  
+  const fsLimC = document.getElementById('fs-limit-cities');
+  if (fsLimC) fsLimC.addEventListener('input', e => { limitCities = parseLimitInput(e.target.value); syncLimitUI(); saveWorkingToSession(); });
+  const fsLimB = document.getElementById('fs-limit-bastions');
+  if (fsLimB) fsLimB.addEventListener('input', e => { limitBastions = parseLimitInput(e.target.value); syncLimitUI(); saveWorkingToSession(); });
+  const fsLimT = document.getElementById('fs-limit-trade');
+  if (fsLimT) fsLimT.addEventListener('input', e => { limitTradePosts = parseLimitInput(e.target.value); syncLimitUI(); saveWorkingToSession(); });
+
+  const fsSel = document.getElementById('fs-alliance-select');
+  if (fsSel) {
+    fsSel.addEventListener('change', e => {
+      setSelectedAlliance(e.target.value || null);
+      if (mode === 'territory-to-alliance' && selectedAllianceId) applyAllianceToSelected(true);
+    });
+  }
+
+  const fsApply = document.getElementById('fs-btn-apply-alliance');
+  if (fsApply) fsApply.addEventListener('click', () => applyAllianceToSelected(false));
+
+  const fsSelectAll = document.getElementById('fs-btn-select-all');
+  if (fsSelectAll) fsSelectAll.addEventListener('click', () => {
+    const count = selectAllFiltered(id => territoryPassesFilter(id));
+    toast(`Выбрано: ${count}`, 'success');
+  });
+
+  const fsClearSel = document.getElementById('fs-btn-clear-selection');
+  if (fsClearSel) fsClearSel.addEventListener('click', () => { clearSelection(); toast('Выбор сброшен', 'success'); });
+
+  const fsClearSelected = document.getElementById('fs-btn-clear-selected');
+  if (fsClearSelected) fsClearSelected.addEventListener('click', () => {
+    const sel = getSelected();
+    if (!sel.length) return toast('Ничего не выбрано', 'error');
+    sel.forEach(id => delete workingAssignments[id]);
+    clearSelection(); applyWorking(); saveWorkingToSession(); renderAlliancesList();
+    toast('Очищено выбранное', 'success');
+  });
+
+  const fsClearAll = document.getElementById('fs-btn-clear-all');
+  if (fsClearAll) fsClearAll.addEventListener('click', async () => {
+    if (!await customConfirm('Очистить все назначения?')) return;
+    workingAssignments = {}; clearSelection(); applyWorking(); saveWorkingToSession(); renderAlliancesList();
+    toast('Очищено всё', 'success');
+  });
+
+  const fsClearFiltered = document.getElementById('fs-btn-clear-filtered');
+  if (fsClearFiltered) fsClearFiltered.addEventListener('click', async () => {
+    if (!await customConfirm('Очистить территории по фильтрам?')) return;
+    const ids = getFilteredTerritories(filters);
+    ids.forEach(id => delete workingAssignments[id]);
+    applyWorking(); saveWorkingToSession(); renderAlliancesList();
+    toast(`Очищено ${ids.length}`, 'success');
+  });
+
+  const fsShuffle = document.getElementById('fs-btn-shuffle-colors');
+  if (fsShuffle) {
+    fsShuffle.addEventListener('click', async () => {
+      if (!workingAlliances.length) return toast('Нет союзов', 'error');
+      if (!await customConfirm('Перемешать цвета всех союзов?')) return;
+      const used = [];
+      workingAlliances.forEach(a => {
+        a.color = pickUniqueColor(used);
+        used.push(a.color);
+      });
+      saveWorkingToSession();
+      renderAll();
+      toast('Цвета перемешаны', 'success');
+    });
+  }
+
+  const fsBtnLabels = document.getElementById('fs-btn-labels');
+  const fsBtnIcons = document.getElementById('fs-btn-icons');
+  updateFsVisualToggles();
+
+  if (fsBtnLabels) {
+    fsBtnLabels.addEventListener('click', () => {
+      toggleLabelsExternal();
+      updateFsVisualToggles();
+    });
+  }
+
+  if (fsBtnIcons) {
+    fsBtnIcons.addEventListener('click', () => {
+      toggleIconsExternal();
+      updateFsVisualToggles();
+    });
+  }
+
+  updateModeUI();
+  renderAllianceSelect();
 }
 
 function renderFilters() {
@@ -437,7 +818,6 @@ function renderAlliancesList() {
     return;
   }
 
-  // ⭐ Статистика по ТЕКУЩИМ (рабочим) назначениям — сразу видно результат распределения
   const stats = computeAllianceStats(workingAssignments);
 
   list.innerHTML = workingAlliances.map((a, i) => {
@@ -472,13 +852,24 @@ function renderAlliancesList() {
 }
 
 function renderAllianceSelect() {
-  const sel = document.getElementById('alliance-select');
-  if (!sel) return;
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">— Выберите —</option>' +
+  const options = '<option value="">— Выберите —</option>' +
     workingAlliances.map(a => `<option value="${a.id}">${a.tag}${a.name ? ' — ' + a.name : ''}</option>`).join('');
-  if (workingAlliances.some(a => a.id === cur)) sel.value = cur;
-  if (selectedAllianceId && workingAlliances.some(a => a.id === selectedAllianceId)) sel.value = selectedAllianceId;
+
+  const mainSel = document.getElementById('alliance-select');
+  if (mainSel) {
+    const cur = mainSel.value;
+    mainSel.innerHTML = options;
+    if (workingAlliances.some(a => a.id === cur)) mainSel.value = cur;
+    if (selectedAllianceId && workingAlliances.some(a => a.id === selectedAllianceId)) mainSel.value = selectedAllianceId;
+  }
+
+  const fsSel = document.getElementById('fs-alliance-select');
+  if (fsSel) {
+    const cur = fsSel.value;
+    fsSel.innerHTML = options;
+    if (workingAlliances.some(a => a.id === cur)) fsSel.value = cur;
+    if (selectedAllianceId && workingAlliances.some(a => a.id === selectedAllianceId)) fsSel.value = selectedAllianceId;
+  }
 }
 
 function moveRank(id, dir) {
@@ -494,9 +885,13 @@ function moveRank(id, dir) {
 async function saveNewAlliance() {
   const tag = document.getElementById('al-tag').value.trim().toUpperCase();
   const name = document.getElementById('al-name').value.trim();
-  const color = document.getElementById('al-color').value;
+  let color = document.getElementById('al-color').value;
   if (!/^[A-ZА-ЯЁ0-9]{3}$/.test(tag)) return toast('Тег — ровно 3 символа', 'error');
   if (workingAlliances.some(a => a.tag === tag)) return toast('Тег уже используется', 'error');
+
+  const usedColors = workingAlliances.map(a => a.color);
+  if (!color || color === '#000000') color = pickUniqueColor(usedColors);
+
   const id = 'al_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
   workingAlliances.push({ id, tag, name, color, rank: workingAlliances.length + 1 });
   saveWorkingToSession();
@@ -539,21 +934,12 @@ function saveEditAlliance() {
 }
 
 async function deleteAlliance(id) {
-  if (!confirm('Удалить союз?')) return;
+  if (!await customConfirm('Удалить союз?')) return;
   workingAlliances = workingAlliances.filter(a => a.id !== id);
   workingAlliances.forEach((a, i) => a.rank = i + 1);
   Object.keys(workingAssignments).forEach(k => { if (workingAssignments[k] === id) delete workingAssignments[k]; });
   if (selectedAllianceId === id) selectedAllianceId = null;
   saveWorkingToSession(); renderAll();
-}
-
-function applyGlobalLabelStyle(key, value) {
-  const ids = getAllTerritoryIds();
-  const s = getLabelSettings();
-  ids.forEach(id => {
-    s[id] = { dx: 0, dy: 0, rotation: 0, scale: 1, ...(s[id] || {}), [key]: value };
-  });
-  setLabelSettings(s);
 }
 
 async function doSaveLayout() {
@@ -571,10 +957,7 @@ async function doSaveLayout() {
     saveWorkingToSession();
     document.getElementById('modal-save').classList.add('hidden');
     toast('Сохранено', 'success');
-  } catch (e) {
-    console.error(e);
-    toast('Ошибка сохранения: ' + e.message, 'error');
-  }
+  } catch (e) { console.error(e); toast('Ошибка сохранения: ' + e.message, 'error'); }
 }
 
 async function doSubmitForApproval() {
@@ -592,10 +975,7 @@ async function doSubmitForApproval() {
     saveWorkingToSession();
     document.getElementById('modal-submit').classList.add('hidden');
     toast('Отправлено', 'success');
-  } catch (e) {
-    console.error(e);
-    toast('Ошибка: ' + e.message, 'error');
-  }
+  } catch (e) { console.error(e); toast('Ошибка: ' + e.message, 'error'); }
 }
 
 async function doApprove() {
@@ -610,7 +990,7 @@ async function doApprove() {
       const a = workingAlliances[i];
       await setDoc(doc(db, 'alliances', a.id), { tag: a.tag, name: a.name || '', color: a.color, rank: i + 1 });
     }
-        await updateLayoutOrCreate(
+    await updateLayoutOrCreate(
       { status: 'approved', approvedAt: serverTimestamp() },
       {
         name: nowString(), description: '',
@@ -681,13 +1061,10 @@ async function loadLayout(id, merge) {
 }
 
 async function delLayout(id) {
-  if (!confirm('Удалить?')) return;
+  if (!await customConfirm('Удалить?')) return;
   try {
     await deleteDoc(doc(db, 'layouts', id));
-    if (savedLayoutId === id) {
-      savedLayoutId = null;
-      saveWorkingToSession(); // ⭐ обновляем сессию, чтобы после перезагрузки не было «висящего» id
-    }
+    if (savedLayoutId === id) { savedLayoutId = null; saveWorkingToSession(); }
     await showLayoutsModal();
   } catch (e) { toast('Ошибка: ' + e.message, 'error'); }
 }
@@ -697,7 +1074,7 @@ async function approveLayout(id) {
     const snap = await getDoc(doc(db, 'layouts', id));
     if (!snap.exists()) return;
     const l = snap.data();
-    if (!confirm(`Утвердить «${l.name}» от ${l.authorName}?`)) return;
+    if (!await customConfirm(`Утвердить «${l.name}» от ${l.authorName}?`)) return;
     workingAlliances = l.data.alliances;
     workingAssignments = l.data.assignments;
     savedLayoutId = id;
@@ -706,7 +1083,12 @@ async function approveLayout(id) {
 }
 
 async function rejectLayout(id) {
-  if (!confirm('Отклонить?')) return;
-  try { await updateDoc(doc(db, 'layouts', id), { status: 'rejected' }); await showLayoutsModal(); toast('Отклонено', 'success'); }
-  catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+  if (!await customConfirm('Отклонить?')) return;
+  try { 
+    await updateDoc(doc(db, 'layouts', id), { status: 'rejected' }); 
+    await showLayoutsModal(); 
+    toast('Отклонено', 'success'); 
+  } catch (e) { 
+    toast('Ошибка: ' + e.message, 'error'); 
+  }
 }

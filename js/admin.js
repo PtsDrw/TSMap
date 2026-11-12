@@ -9,18 +9,15 @@ import {
   setLabelSettings, setPreviewData, setupLabelsToggle, computeAllianceStats
 } from './map-core.js';
 import { requireAuth, logout } from './auth.js';
-import { randomColor } from './palette.js';
+import { pickUniqueColor } from './palette.js';
 
-// ==== СОСТОЯНИЕ ====
 let currentKeyId = null;
 let workingAlliances = [];
 let workingAssignments = {};
 let selectedAllianceId = null;
 let mode = 'territory-to-alliance';
 let hasUnsavedChanges = false;
-let mapReady = false;
 
-// ==== ИНИЦИАЛИЗАЦИЯ ====
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('[admin] DOMContentLoaded');
   if (!requireAuth(['admin'])) return;
@@ -29,29 +26,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const logoutBtn = document.getElementById('btn-logout');
   if (logoutBtn) logoutBtn.addEventListener('click', logout);
 
-  // ⭐ Карта — в try/catch, не блокируем остальной UI
   try {
-    const container = document.getElementById('map-container');
-    console.log('[admin] map container size before init:', container?.clientWidth, 'x', container?.clientHeight);
-
-    const map = await initMap({
-      containerId: 'map-container',
-      interactive: true,
-      clickHandler: onTerritoryClick
-    });
-
-    if (map) {
-      mapReady = true;
-      console.log('[admin] map ready');
-    } else {
+    const map = await initMap({ containerId: 'map-container', interactive: true, clickHandler: onTerritoryClick });
+    if (!map) {
       console.error('[admin] initMap returned null');
-      if (container) {
-        container.innerHTML = `
-          <div class="p-6 text-center text-red-500">
-            <p class="font-bold text-lg mb-2"><i class="fas fa-exclamation-triangle mr-2"></i>Карта не загружена</p>
-            <p class="text-sm">Проверьте, что файл <code>assets/map.svg</code> существует.</p>
-          </div>`;
-      }
       toast('Карта не загружена — проверьте assets/map.svg', 'error');
     }
   } catch (e) {
@@ -59,7 +37,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     toast('Ошибка карты: ' + e.message, 'error');
   }
 
-  // ⭐ Данные — тоже в try/catch, чтобы UI не ломался
   try {
     await loadMapData();
     console.log('[admin] data loaded:', workingAlliances.length, 'alliances,', Object.keys(workingAssignments).length, 'assignments');
@@ -72,7 +49,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   try { renderAlliances(); } catch (e) { console.error('[admin] renderAlliances:', e); }
   try { renderAllianceSelect(); } catch (e) { console.error('[admin] renderAllianceSelect:', e); }
 
-  // ⭐ Привязка UI — ВСЕГДА (даже без карты)
   try { initKeyModal(); } catch (e) { console.error('[admin] initKeyModal:', e); }
   try { initAllianceModal(); } catch (e) { console.error('[admin] initAllianceModal:', e); }
   try { initMapDataControls(); } catch (e) { console.error('[admin] initMapDataControls:', e); }
@@ -89,7 +65,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log('[admin] init complete');
 });
 
-// ==== ДАННЫЕ ====
 async function loadMapData() {
   const al = await getDocs(collection(db, 'alliances'));
   workingAlliances = [];
@@ -110,7 +85,6 @@ function applyWorking() {
   );
 }
 
-// ==== КЛИК ====
 function onTerritoryClick(id, el) {
   if (id === 'A') return;
 
@@ -118,9 +92,8 @@ function onTerritoryClick(id, el) {
     const isSel = el.classList.contains('selected');
     selectTerritory(id, !isSel);
     updateSlidersFromSelection();
-    } else {
+  } else {
     if (!selectedAllianceId) { toast('Сначала выберите союз', 'error'); return; }
-    // ⭐ Повторный клик по территории этого же союза — снимаем назначение
     if (workingAssignments[id] === selectedAllianceId) {
       delete workingAssignments[id];
     } else {
@@ -180,7 +153,7 @@ async function saveMapData() {
   }
 }
 
-// ==== КЛЮЧИ ====
+/* ═══ КЛЮЧИ ═══ */
 async function renderKeysList() {
   const list = document.getElementById('keys-list');
   if (!list) return;
@@ -271,7 +244,7 @@ function initKeyModal() {
   });
 }
 
-// ==== СОЮЗЫ ====
+/* ═══ СОЮЗЫ ═══ */
 function renderAlliances() {
   const list = document.getElementById('alliances-ranking');
   if (!list) return;
@@ -341,7 +314,8 @@ function initAllianceModal() {
     document.getElementById('modal-alliance').classList.remove('hidden');
     document.getElementById('al-tag').value = '';
     document.getElementById('al-name').value = '';
-    document.getElementById('al-color').value = randomColor();
+    const usedColors = workingAlliances.map(a => a.color);
+    document.getElementById('al-color').value = pickUniqueColor(usedColors);
   });
   document.getElementById('btn-close-alliance').addEventListener('click', () => document.getElementById('modal-alliance').classList.add('hidden'));
   document.getElementById('btn-save-alliance').addEventListener('click', saveNewAlliance);
@@ -350,9 +324,12 @@ function initAllianceModal() {
 function saveNewAlliance() {
   const tag = document.getElementById('al-tag').value.trim().toUpperCase();
   const name = document.getElementById('al-name').value.trim();
-  const color = document.getElementById('al-color').value;
+  let color = document.getElementById('al-color').value;
   if (!/^[A-ZА-ЯЁ0-9]{3}$/.test(tag)) return toast('Тег — ровно 3 символа', 'error');
   if (workingAlliances.some(a => a.tag === tag)) return toast('Тег уже используется', 'error');
+
+  const usedColors = workingAlliances.map(a => a.color);
+  if (!color || color === '#000000') color = pickUniqueColor(usedColors);
 
   const id = 'al_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
   workingAlliances.push({ id, tag, name, color, rank: workingAlliances.length + 1 });
@@ -392,21 +369,12 @@ function deleteAlliance(id) {
   renderAllianceSelect();
 }
 
-// ==== УПРАВЛЕНИЕ КАРТОЙ ====
-// ⭐ Показывает/скрывает кнопки выделения в зависимости от режима
-function updateModeUI() {
-  const isTerritoryMode = mode === 'territory-to-alliance';
-  const selControls = document.getElementById('selection-controls');
-  if (selControls) selControls.classList.toggle('hidden', !isTerritoryMode);
-}
-
-// ==== УПРАВЛЕНИЕ КАРТОЙ ====
+/* ═══ УПРАВЛЕНИЕ КАРТОЙ ═══ */
 function initMapDataControls() {
-    document.querySelectorAll('input[name="edit-mode"]').forEach(r => {
+  document.querySelectorAll('input[name="edit-mode"]').forEach(r => {
     r.addEventListener('change', e => {
       mode = e.target.value;
       clearSelection();
-      updateModeUI();
     });
   });
 
@@ -439,11 +407,27 @@ function initMapDataControls() {
     toast('Назначения очищены', 'success');
   });
 
-    document.getElementById('btn-save-map').addEventListener('click', saveMapData);
-  updateModeUI();
+  document.getElementById('btn-save-map').addEventListener('click', saveMapData);
+
+  // ⭐ Переназначить цвета всем
+  document.getElementById('btn-shuffle-colors').addEventListener('click', () => {
+    if (!workingAlliances.length) return toast('Нет союзов', 'error');
+    if (!confirm('Переназначить случайные цвета всем союзам?')) return;
+
+    const used = [];
+    workingAlliances.forEach(a => {
+      a.color = pickUniqueColor(used);
+      used.push(a.color);
+    });
+    hasUnsavedChanges = true;
+    applyWorking();
+    renderAlliances();
+    renderAllianceSelect();
+    toast('Цвета переназначены', 'success');
+  });
 }
 
-// ==== ПОДПИСИ ====
+/* ═══ ПОДПИСИ ═══ */
 function initLabelControls() {
   const DEFAULT = { dx: 0, dy: 0, rotation: 0, scale: 1 };
 
@@ -516,7 +500,7 @@ function updateSlidersFromSelection() {
   document.getElementById('lbl-scale').value = cfg.scale || 1;
 }
 
-// ==== ТУЛБАР ====
+/* ═══ ТУЛБАР ═══ */
 function initToolbar() {
   setupLabelsToggle('btn-toggle-labels');
   document.getElementById('btn-download').addEventListener('click', () => document.getElementById('modal-download').classList.remove('hidden'));
