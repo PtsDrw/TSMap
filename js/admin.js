@@ -2,11 +2,14 @@ import { db } from './firebase-config.js';
 import {
   collection, getDocs, doc, setDoc, deleteDoc, updateDoc, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-import { initTheme, generateKey, toast } from './utils.js';
+import { initTheme, generateKey, toast, customConfirm, customPrompt } from './utils.js';
 import {
   initMap, toggleLabels, exportMapPNG, getLabelSettings, saveLabelSettings,
   selectTerritory, getSelected, clearSelection, selectAllFiltered, getAllTerritoryIds,
-  setLabelSettings, setPreviewData, setupLabelsToggle, computeAllianceStats
+  setLabelSettings, setPreviewData, setupLabelsToggle, computeAllianceStats,
+  setupUnassignedIconsToggle, isLabelsVisible, isUnassignedIconsVisible,
+  toggleLabelsExternal, toggleIconsExternal,
+  isHiddenLabelsVisible, toggleHiddenLabelsExternal // ⭐ НОВОЕ
 } from './map-core.js';
 import { requireAuth, logout } from './auth.js';
 import { pickUniqueColor } from './palette.js';
@@ -195,7 +198,7 @@ async function renderKeysList() {
     await renderKeysList();
   }));
   list.querySelectorAll('.delete-key').forEach(b => b.addEventListener('click', async () => {
-    if (confirm('Удалить ключ?')) {
+    if (await customConfirm('Удалить ключ?')) {
       await deleteDoc(doc(db, 'access_keys', b.dataset.id));
       await renderKeysList();
     }
@@ -340,14 +343,14 @@ function saveNewAlliance() {
   toast('Союз добавлен. Не забудьте «Сохранить карту»', 'success');
 }
 
-function editAlliance(id) {
+async function editAlliance(id) {
   const a = workingAlliances.find(x => x.id === id);
   if (!a) return;
-  const tag = prompt('Новый тег (3 символа):', a.tag);
+  const tag = await customPrompt('Новый тег (3 символа):', a.tag);
   if (!tag) return;
   const t = tag.trim().toUpperCase();
   if (!/^[A-ZА-ЯЁ0-9]{3}$/.test(t)) return toast('Тег — ровно 3 символа', 'error');
-  const name = prompt('Название:', a.name || '');
+  const name = await customPrompt('Название:', a.name || '');
   a.tag = t;
   a.name = name ?? a.name;
   hasUnsavedChanges = true;
@@ -355,8 +358,8 @@ function editAlliance(id) {
   renderAllianceSelect();
 }
 
-function deleteAlliance(id) {
-  if (!confirm('Удалить союз? Все его территории освободятся.')) return;
+async function deleteAlliance(id) {
+  if (!await customConfirm('Удалить союз? Все его территории освободятся.')) return;
   workingAlliances = workingAlliances.filter(a => a.id !== id);
   workingAlliances.forEach((a, i) => a.rank = i + 1);
   Object.keys(workingAssignments).forEach(k => {
@@ -397,8 +400,8 @@ function initMapDataControls() {
     toast('Выбор сброшен', 'success');
   });
 
-  document.getElementById('btn-clear-territories').addEventListener('click', () => {
-    if (!confirm('Очистить ВСЕ назначения территорий?')) return;
+  document.getElementById('btn-clear-territories').addEventListener('click', async () => {
+    if (!await customConfirm('Очистить ВСЕ назначения территорий?')) return;
     workingAssignments = {};
     clearSelection();
     hasUnsavedChanges = true;
@@ -409,10 +412,9 @@ function initMapDataControls() {
 
   document.getElementById('btn-save-map').addEventListener('click', saveMapData);
 
-  // ⭐ Переназначить цвета всем
-  document.getElementById('btn-shuffle-colors').addEventListener('click', () => {
+  document.getElementById('btn-shuffle-colors').addEventListener('click', async () => {
     if (!workingAlliances.length) return toast('Нет союзов', 'error');
-    if (!confirm('Переназначить случайные цвета всем союзам?')) return;
+    if (!await customConfirm('Переназначить случайные цвета всем союзам?')) return;
 
     const used = [];
     workingAlliances.forEach(a => {
@@ -476,7 +478,7 @@ function initLabelControls() {
   });
 
   document.getElementById('btn-reset-all').addEventListener('click', async () => {
-    if (!confirm('Сбросить все настройки подписей?')) return;
+    if (!await customConfirm('Сбросить все настройки подписей?')) return;
     const all = {};
     getAllTerritoryIds().forEach(id => all[id] = { ...DEFAULT });
     await saveLabelSettings(all, true);
@@ -503,6 +505,28 @@ function updateSlidersFromSelection() {
 /* ═══ ТУЛБАР ═══ */
 function initToolbar() {
   setupLabelsToggle('btn-toggle-labels');
+  setupUnassignedIconsToggle('btn-toggle-icons');
+
+  const btnHidden = document.getElementById('btn-toggle-hidden');
+  const updateBtnHidden = () => {
+    if (!btnHidden) return;
+    if (isHiddenLabelsVisible()) {
+      btnHidden.className = 'px-3 py-1 bg-orange-600 text-white rounded text-sm';
+      btnHidden.innerHTML = '<i class="fas fa-eye mr-1"></i>Скрытый текст вкл';
+    } else {
+      btnHidden.className = 'px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded text-sm';
+      btnHidden.innerHTML = '<i class="fas fa-eye-slash mr-1"></i>Скрытый текст';
+    }
+  };
+
+  if (btnHidden) {
+    btnHidden.addEventListener('click', () => {
+      toggleHiddenLabelsExternal();
+      updateBtnHidden();
+    });
+    updateBtnHidden();
+  }
+
   document.getElementById('btn-download').addEventListener('click', () => document.getElementById('modal-download').classList.remove('hidden'));
   document.getElementById('modal-download').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-download]');

@@ -12,6 +12,7 @@ let onTerritoryClick = null;
 let selectedTerritories = new Set();
 let hideUnassignedLabels = false;
 let showUnassignedIcons = false;
+let showHiddenLabels = false; 
 
 const FALLBACK_VIEWBOX = [-10, -10, 550, 542];
 const LABELS_STATE_KEY = 'ts_labels_visible';
@@ -152,8 +153,11 @@ function buildLabelsLayer() {
     const allianceId = territoryAssignments[id];
     const info = getTerritoryLevelLabel(id);
     if (!info) return;
+    
     const alliance = allianceId ? allianceMap[allianceId] : null;
-    if (!alliance && !showUnassignedIcons) return;
+    
+    if (!alliance && !showUnassignedIcons && !showHiddenLabels) return;
+    
     const cfg = labelSettings[id] || {};
     const dx = cfg.dx || 0, dy = cfg.dy || 0;
     const rot = cfg.rotation || 0, scale = cfg.scale || 1;
@@ -161,22 +165,39 @@ function buildLabelsLayer() {
     if (!srcTxt) return;
     const ox = parseFloat(srcTxt.getAttribute('x')) || 0;
     const oy = parseFloat(srcTxt.getAttribute('y')) || 0;
-    const tag = alliance ? alliance.tag : '';
-    const fits = doesTextFit(id, tag, ox, oy, cfg);
-    const showTag = !!tag && fits;
+    
+    let tag = '';
+    let isOverflowing = false;
+    let isTemplate = false;
+    let showTag = false;
+
+    if (alliance) {
+      tag = alliance.tag;
+      const fits = doesTextFit(id, tag, ox, oy, cfg);
+      showTag = fits || showHiddenLabels;
+      isOverflowing = !fits && showHiddenLabels;
+    } else if (showHiddenLabels) {
+      tag = 'XXX';
+      showTag = true;
+      isTemplate = true;
+    }
+
     const tagWidth = tag ? measureTextWidth(tag) : 0;
     const finalWidth = showTag ? (ICON_SIZE + ICON_GAP + tagWidth) : ICON_SIZE;
     const startX = -finalWidth / 2;
+    
     const group = document.createElementNS(SVG_NS, 'g');
     group.setAttribute('class', 'label-group');
     group.setAttribute('data-id', id);
     group.setAttribute('pointer-events', 'none');
     group.setAttribute('transform', `translate(${ox + dx} ${oy + dy}) rotate(${rot}) scale(${scale})`);
+    
     const iconG = document.createElementNS(SVG_NS, 'g');
     iconG.setAttribute('transform', `translate(${startX} -${ICON_HALF})`);
     iconG.appendChild(createIconShape(info.kind));
     iconG.appendChild(createIconNumber(info.level, getIconTextColor(info.kind)));
     group.appendChild(iconG);
+    
     if (showTag) {
       const colors = getLabelStyleColors();
       const txt = document.createElementNS(SVG_NS, 'text');
@@ -188,8 +209,23 @@ function buildLabelsLayer() {
       txt.setAttribute('font-size', '9');
       txt.setAttribute('font-weight', 'bold');
       txt.setAttribute('fill', cfg.fill || colors.fill);
-      txt.setAttribute('stroke', colors.stroke);
-      txt.setAttribute('stroke-width', '1');
+      
+      // ⭐ НОВАЯ ЛОГИКА СТИЛЕЙ
+      if (isTemplate) {
+        // Синий пунктир для шаблона
+        txt.setAttribute('stroke', '#3b82f6');
+        txt.setAttribute('stroke-width', '1.5');
+        txt.setAttribute('stroke-dasharray', '2, 2');
+      } else if (isOverflowing) {
+        // Красный для вылезающего текста
+        txt.setAttribute('stroke', '#ef4444');
+        txt.setAttribute('stroke-width', '2');
+      } else {
+        // Стандартный стиль
+        txt.setAttribute('stroke', colors.stroke);
+        txt.setAttribute('stroke-width', '1');
+      }
+      
       txt.setAttribute('stroke-linejoin', 'round');
       txt.setAttribute('paint-order', 'stroke');
       txt.textContent = tag;
@@ -357,7 +393,6 @@ function addMapControls(container, pz, interactive, handleTerritoryClick, onFull
   };
 
   const onTouchMove = (e) => {
-    // ⭐ Игнорируем мультитач (2+ пальца) — пусть svg-pan-zoom сам обрабатывает pinch
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
     if (tapData && !tapData.moved) {
@@ -489,13 +524,12 @@ export async function initMap({ containerId, interactive = false, clickHandler =
         maxZoom: 12, 
         zoomScaleSensitivity: 0.4, 
         preventClickEventEnabled: false,
-        touchZoomEnabled: true // ⭐ Явно включаем зум двумя пальцами
+        touchZoomEnabled: true 
       });
       
       panZoom.enableZoom();
       if (typeof panZoom.enableTouchZoom === 'function') panZoom.enableTouchZoom();
 
-      // ⭐ Принудительно разрешаем pinch-zoom на мобильных (фикс для Safari/Chrome)
       svgRoot.addEventListener('touchstart', (e) => {
         if (e.touches.length > 1 && e.cancelable) e.preventDefault();
       }, { passive: false });
@@ -707,17 +741,34 @@ export async function exportMapPNG(withLabels, theme = 'light') {
         const allianceId = territoryAssignments[id];
         const info = getTerritoryLevelLabel(id);
         if (!info) return;
+        
         const alliance = allianceId ? allianceMap[allianceId] : null;
-        if (!alliance) return;
+        
+        if (!alliance && !showHiddenLabels) return;
+
         const cfg = labelSettings[id] || {};
         const dx = cfg.dx || 0, dy = cfg.dy || 0, rot = cfg.rotation || 0, scale = cfg.scale || 1;
         const srcLabel = svgRoot.querySelector(`#labels .label[data-id="${id}"]`);
         if (!srcLabel) return;
         const ox = parseFloat(srcLabel.getAttribute('x')) || 0;
         const oy = parseFloat(srcLabel.getAttribute('y')) || 0;
-        const tag = alliance.tag;
-        const fits = doesTextFit(id, tag, ox, oy, cfg);
-        const showTag = fits;
+        
+        let tag = '';
+        let showTag = false;
+        let isOverflowing = false;
+        let isTemplate = false;
+
+        if (alliance) {
+          tag = alliance.tag;
+          const fits = doesTextFit(id, tag, ox, oy, cfg);
+          showTag = fits || showHiddenLabels;
+          isOverflowing = !fits && showHiddenLabels;
+        } else if (showHiddenLabels) {
+          tag = 'XXX';
+          showTag = true;
+          isTemplate = true;
+        }
+
         const tagWidth = measureTextWidth(tag);
         const finalWidth = showTag ? (ICON_SIZE + ICON_GAP + tagWidth) : ICON_SIZE;
         const startX = -finalWidth / 2;
@@ -743,7 +794,21 @@ export async function exportMapPNG(withLabels, theme = 'light') {
 
         if (showTag) {
           const txt = document.createElementNS(NS, 'text');
-          txt.setAttribute('x', String(startX + ICON_SIZE + ICON_GAP)); txt.setAttribute('y', '0'); txt.setAttribute('text-anchor', 'start'); txt.setAttribute('dominant-baseline', 'central'); txt.setAttribute('font-family', 'Arial, sans-serif'); txt.setAttribute('font-size', '9'); txt.setAttribute('font-weight', 'bold'); txt.setAttribute('fill', cfg.fill || labelFill); txt.setAttribute('stroke', labelStroke); txt.setAttribute('stroke-width', '1'); txt.setAttribute('stroke-linejoin', 'round'); txt.setAttribute('paint-order', 'stroke');
+          txt.setAttribute('x', String(startX + ICON_SIZE + ICON_GAP)); txt.setAttribute('y', '0'); txt.setAttribute('text-anchor', 'start'); txt.setAttribute('dominant-baseline', 'central'); txt.setAttribute('font-family', 'Arial, sans-serif'); txt.setAttribute('font-size', '9'); txt.setAttribute('font-weight', 'bold'); txt.setAttribute('fill', cfg.fill || labelFill); 
+          
+          if (isTemplate) {
+            txt.setAttribute('stroke', '#3b82f6');
+            txt.setAttribute('stroke-width', '1.5');
+            txt.setAttribute('stroke-dasharray', '2, 2');
+          } else if (isOverflowing) {
+            txt.setAttribute('stroke', '#ef4444');
+            txt.setAttribute('stroke-width', '2');
+          } else {
+            txt.setAttribute('stroke', labelStroke);
+            txt.setAttribute('stroke-width', '1');
+          }
+          
+          txt.setAttribute('stroke-linejoin', 'round'); txt.setAttribute('paint-order', 'stroke');
           txt.textContent = tag; group.appendChild(txt);
         }
         labelsLayer.appendChild(group);
@@ -844,4 +909,14 @@ export function toggleLabelsExternal() {
 export function toggleIconsExternal() {
   const btn = document.getElementById('btn-toggle-icons');
   if (btn) btn.click();
+}
+
+// ⭐ Функции для Скрытого текста (Админка)
+export function isHiddenLabelsVisible() {
+  return showHiddenLabels;
+}
+
+export function toggleHiddenLabelsExternal() {
+  showHiddenLabels = !showHiddenLabels;
+  buildLabelsLayer();
 }
